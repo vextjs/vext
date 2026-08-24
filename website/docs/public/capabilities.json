@@ -1,7 +1,39 @@
 {
   "schemaVersion": "vext.capabilities/v1",
   "framework": "VextJS",
-  "version": "1.0.0",
+  "version": "2.0.0",
+  "capabilities": [
+    {
+      "id": "framework-seo",
+      "label": "Framework and route SEO, sitemap, and robots contracts",
+      "documentationRoute": "/frontend/seo-sitemap"
+    },
+    {
+      "id": "whole-page-no-hydration",
+      "label": "Whole-page SSR without a browser hydration runtime",
+      "documentationRoute": "/frontend/hydration"
+    },
+    {
+      "id": "raw-app-db",
+      "label": "Raw MonSQLize instance exposed through the single app.db entry point",
+      "documentationRoute": "/guide/database"
+    },
+    {
+      "id": "rate-limit-opt-in",
+      "label": "Global rate limiting installed only through explicit opt-in",
+      "documentationRoute": "/guide/configuration"
+    },
+    {
+      "id": "scaffold-type-ownership",
+      "label": "Language-aware scaffold and generated type ownership boundaries",
+      "documentationRoute": "/guide/cli"
+    },
+    {
+      "id": "path-validation-status",
+      "label": "HTTP 400 for path validation and HTTP 422 for other request locations",
+      "documentationRoute": "/guide/validation"
+    }
+  ],
   "frontend": {
     "supported": [
       {

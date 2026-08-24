@@ -12,6 +12,7 @@ import type { VextOpenAPIDocsKind } from "../../lib/openapi/types.js";
 import {
   createDigest,
   createRouteFreshnessIdentity,
+  projectRouteSchemaContract,
 } from "../../frontend/contract/schema-ir.js";
 import {
   normalizeDocumentedResponseSelector,
@@ -24,7 +25,10 @@ import type {
   VextRouteSchemaContractV1,
   VextSchemaIRV1,
 } from "../../frontend/contract/types.js";
-import type { VextRouteFrontendOptions } from "../../types/app.js";
+import type {
+  RouteOptions,
+  VextRouteFrontendOptions,
+} from "../../types/app.js";
 const HTTP_METHODS = [
   "get",
   "post",
@@ -42,6 +46,23 @@ interface StaticRouteResponseDefinition {
   contentType: string;
   source: "responses" | "docs.responses";
   schema?: Record<string, unknown> | string;
+}
+
+interface StaticScanContext {
+  bindings: ReadonlyMap<string, string>;
+  ambiguousBindings: ReadonlySet<string>;
+}
+
+interface RouteProjectionContext {
+  fileRelativePath: string;
+  method: string;
+  routePath?: string;
+}
+
+interface DefineRoutesBlock {
+  paramName: string;
+  body: string;
+  maskedBody: string;
 }
 
 export interface RouteIndexEntry {
@@ -92,36 +113,74 @@ function scanRouteEntries(
   const prefix = filePathToRoutePrefix(filePath, routesDir);
   const fileRelativePath = relative(rootDir, filePath).split(sep).join("/");
   const entries: RouteIndexEntry[] = [];
+  const staticContext = collectConstBindings(source);
 
   for (const block of findDefineRoutesBlocks(source)) {
     const methodPattern = new RegExp(
-      `${escapeRegExp(block.paramName)}\\.(${HTTP_METHODS.join("|")})\\s*\\(`,
+      `(?<![\\w$.])${escapeRegExp(block.paramName)}\\.(${HTTP_METHODS.join("|")})\\s*\\(`,
       "gu",
     );
 
-    for (const match of block.body.matchAll(methodPattern)) {
-      const openParen = block.body.indexOf("(", match.index);
-      const callBody = readBalanced(block.body, openParen, "(", ")");
-      if (!callBody) continue;
-
-      const args = splitTopLevelArgs(callBody.slice(1, -1));
-      const routePath = readStringLiteral(args[0] ?? "");
-      if (!routePath) continue;
+    for (const match of block.maskedBody.matchAll(methodPattern)) {
       const method = match[1]!.toUpperCase();
-      const normalizedPath = normalizeRoutePath(prefix, routePath);
+      const baseContext: RouteProjectionContext = {
+        fileRelativePath,
+        method,
+      };
+      assertDirectRouteRegistration(
+        block.maskedBody,
+        match.index!,
+        baseContext,
+      );
+      const openParen = block.maskedBody.indexOf("(", match.index);
+      const closeParen = findMatchingIndex(
+        block.maskedBody,
+        openParen,
+        "(",
+        ")",
+      );
+      if (closeParen < 0) {
+        throw projectionError(baseContext, "route call is not balanced");
+      }
 
-      const docs = readRouteDocs(args[1]);
+      const args = splitTopLevelArgs(
+        block.body.slice(openParen + 1, closeParen),
+      );
+      const routePath = readStaticStringExpression(
+        args[0],
+        staticContext,
+        baseContext,
+        "route path expression must be statically resolvable",
+      );
+      const normalizedPath = normalizeRoutePath(prefix, routePath);
+      const context: RouteProjectionContext = {
+        ...baseContext,
+        routePath: normalizedPath,
+      };
+      const optionsObject =
+        args.length >= 3
+          ? readStaticObjectExpression(
+              args[1],
+              staticContext,
+              context,
+              "route options",
+              true,
+            )
+          : undefined;
+
+      const docs = readRouteDocs(optionsObject, staticContext, context);
       const responses = mergeRouteResponseDefinitions(
-        readRouteResponseDefinitions(args[1], "responses"),
+        readRouteResponseDefinitions(
+          optionsObject,
+          "responses",
+          staticContext,
+          context,
+        ),
         docs.responses,
       );
       const frontend =
-        args.length >= 3
-          ? readRouteFrontend(args[1], {
-              fileRelativePath,
-              method,
-              routePath: normalizedPath,
-            })
+        optionsObject !== undefined
+          ? readRouteFrontend(optionsObject, staticContext, context)
           : undefined;
       const handler = args.length >= 3 ? args[2] : args[1];
 
@@ -137,7 +196,13 @@ function scanRouteEntries(
         tags: docs.tags,
         hidden: docs.hidden,
         docsKind: detectRouteSourceDocsKind(handler),
-        schema: createRouteSchemaContract(responses, method),
+        schema: createRouteSchemaContract(
+          optionsObject,
+          responses,
+          method,
+          staticContext,
+          context,
+        ),
         freshness: createRouteFreshnessIdentity({ frontend }),
       });
     }
@@ -146,88 +211,157 @@ function scanRouteEntries(
   return entries;
 }
 
-/**
- * Statically projects the literal subset of RouteOptions.frontend used by the
- * build pipeline. A three-argument route must keep its options and frontend
- * metadata as inline object literals so build and runtime cannot diverge.
- */
+/** Statically projects the finite RouteOptions.frontend grammar. */
 function readRouteFrontend(
-  optionsArg: string | undefined,
-  context: { fileRelativePath: string; method: string; routePath: string },
+  optionsObject: string,
+  staticContext: StaticScanContext,
+  context: RouteProjectionContext,
 ): VextRouteFrontendOptions | undefined {
-  const options = optionsArg?.trim();
-  if (!options?.startsWith("{")) {
-    throw new Error(
-      `[vextjs] ${context.fileRelativePath} ${context.method} ${context.routePath} route options must be an inline object literal so the build manifest can project them safely.`,
-    );
-  }
-
-  const frontendValue = readObjectEntryValue(options, "frontend")?.trim();
+  const frontendValue = readObjectEntryValue(optionsObject, "frontend")?.trim();
   if (frontendValue === undefined) return undefined;
-  const frontendObject = readObjectProperty(options, "frontend");
-  if (!frontendObject) {
-    throw new Error(
-      `[vextjs] ${context.fileRelativePath} ${context.method} ${context.routePath} RouteOptions.frontend must be an inline JSON-safe object literal so hydration and SEO are identical at build time and runtime.`,
+  const parsed = parseStaticSchemaValue(
+    frontendValue,
+    staticContext,
+    `${formatProjectionContext(context)} RouteOptions.frontend`,
+  );
+  if (!isStaticSchemaObject(parsed)) {
+    throw projectionError(
+      context,
+      "RouteOptions.frontend must be statically resolvable to an object literal",
     );
   }
-
-  const mode = readStringProperty(frontendObject, "mode");
-  const revalidate = readNumberProperty(frontendObject, "revalidate");
-  const staticParams = readObjectArrayProperty(frontendObject, "staticParams");
-  const clientOnly = readOptionalBooleanProperty(frontendObject, "clientOnly");
-  const hydration = readStringProperty(frontendObject, "hydration");
-  const seoObject = readObjectProperty(frontendObject, "seo");
-  const seo = seoObject ? parseStaticSchemaObject(seoObject) : undefined;
-  const tags = readStringArrayProperty(frontendObject, "tags");
-  const page = readStringProperty(frontendObject, "page");
-  const staticBudgetObject = readObjectProperty(frontendObject, "staticBudget");
-  const staticBudget = staticBudgetObject
-    ? compactObject({
-        maxParams:
-          readNumberProperty(staticBudgetObject, "maxParams") ?? undefined,
-        maxDurationMs:
-          readNumberProperty(staticBudgetObject, "maxDurationMs") ?? undefined,
-        maxBytes:
-          readNumberProperty(staticBudgetObject, "maxBytes") ?? undefined,
-      })
-    : undefined;
-
-  return compactObject({
-    mode: mode ?? undefined,
-    revalidate: revalidate ?? undefined,
-    staticParams: staticParams ?? undefined,
-    clientOnly,
-    hydration: hydration ?? undefined,
-    seo: seo ?? undefined,
-    tags: tags.length > 0 ? tags : undefined,
-    page: page ?? undefined,
-    staticBudget:
-      staticBudget && Object.keys(staticBudget).length > 0
-        ? staticBudget
-        : undefined,
-  }) as VextRouteFrontendOptions;
+  return parsed as VextRouteFrontendOptions;
 }
 
-function findDefineRoutesBlocks(
-  source: string,
-): Array<{ paramName: string; body: string }> {
-  const blocks: Array<{ paramName: string; body: string }> = [];
+function findDefineRoutesBlocks(source: string): DefineRoutesBlock[] {
+  const blocks: DefineRoutesBlock[] = [];
+  const masked = createLexicalMask(source);
   const pattern =
-    /defineRoutes\s*\(\s*(?:async\s*)?\(?\s*([A-Za-z_$][\w$]*)[^)=]*\)?\s*=>\s*\{/gu;
+    /(?<![\w$.])defineRoutes\s*\(\s*(?:async\s*)?(?:\(\s*([A-Za-z_$][\w$]*)(?:\s*:[^)]*)?\s*\)|([A-Za-z_$][\w$]*))\s*=>\s*\{/gu;
 
-  for (const match of source.matchAll(pattern)) {
-    const openBrace = source.indexOf("{", match.index);
-    const body = readBalanced(source, openBrace, "{", "}");
-    const paramName = match[1];
-    if (body && paramName) {
-      blocks.push({ paramName, body: body.slice(1, -1) });
+  for (const match of masked.matchAll(pattern)) {
+    const openBrace = match.index! + match[0].lastIndexOf("{");
+    const closeBrace = findMatchingIndex(masked, openBrace, "{", "}");
+    const paramName = match[1] ?? match[2];
+    if (closeBrace >= 0 && paramName) {
+      blocks.push({
+        paramName,
+        body: source.slice(openBrace + 1, closeBrace),
+        maskedBody: masked.slice(openBrace + 1, closeBrace),
+      });
     }
   }
 
   return blocks;
 }
 
-function readRouteDocs(optionsArg: string | undefined): {
+function assertDirectRouteRegistration(
+  maskedBody: string,
+  matchIndex: number,
+  context: RouteProjectionContext,
+): void {
+  let braceDepth = 0;
+  let parenthesisDepth = 0;
+  let bracketDepth = 0;
+  for (let index = 0; index < matchIndex; index++) {
+    const char = maskedBody[index]!;
+    if (char === "{") braceDepth++;
+    else if (char === "}") braceDepth--;
+    else if (char === "(") parenthesisDepth++;
+    else if (char === ")") parenthesisDepth--;
+    else if (char === "[") bracketDepth++;
+    else if (char === "]") bracketDepth--;
+  }
+
+  const lineStart =
+    Math.max(
+      maskedBody.lastIndexOf("\n", matchIndex - 1),
+      maskedBody.lastIndexOf("\r", matchIndex - 1),
+    ) + 1;
+  const statementStart = Math.max(
+    lineStart,
+    maskedBody.lastIndexOf(";", matchIndex - 1) + 1,
+  );
+  const linePrefix = maskedBody.slice(statementStart, matchIndex).trim();
+  if (
+    braceDepth !== 0 ||
+    parenthesisDepth !== 0 ||
+    bracketDepth !== 0 ||
+    linePrefix ||
+    hasRuntimeControlPrefix(maskedBody, statementStart)
+  ) {
+    throw projectionError(
+      context,
+      "route registration must be a direct top-level statement in the defineRoutes callback",
+    );
+  }
+}
+
+function hasRuntimeControlPrefix(
+  maskedBody: string,
+  statementStart: number,
+): boolean {
+  let previous = statementStart - 1;
+  while (previous >= 0 && /\s/u.test(maskedBody[previous]!)) previous--;
+  if (previous < 0 || maskedBody[previous] === ";") return false;
+
+  const previousChar = maskedBody[previous]!;
+  if (/[&|?:=,([>!+*/%^-]/u.test(previousChar)) return true;
+  if (previousChar === ")") {
+    const open = findOpeningIndex(maskedBody, previous, "(", ")");
+    if (open >= 0) {
+      const immediateWord = readPreviousIdentifier(maskedBody, open - 1);
+      if (["if", "for", "while", "with"].includes(immediateWord.word)) {
+        return true;
+      }
+      if (immediateWord.word === "await") {
+        return (
+          readPreviousIdentifier(maskedBody, immediateWord.start - 1).word ===
+          "for"
+        );
+      }
+    }
+  }
+
+  return ["do", "else", "return", "throw", "yield"].includes(
+    readPreviousIdentifier(maskedBody, previous).word,
+  );
+}
+
+function findOpeningIndex(
+  source: string,
+  closeIndex: number,
+  openChar: "(",
+  closeChar: ")",
+): number {
+  let depth = 0;
+  for (let index = closeIndex; index >= 0; index--) {
+    const char = source[index]!;
+    if (char === closeChar) depth++;
+    else if (char === openChar) {
+      depth--;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
+
+function readPreviousIdentifier(
+  source: string,
+  fromIndex: number,
+): { word: string; start: number } {
+  let end = fromIndex;
+  while (end >= 0 && /\s/u.test(source[end]!)) end--;
+  let start = end;
+  while (start >= 0 && /[A-Za-z_$]/u.test(source[start]!)) start--;
+  return { word: source.slice(start + 1, end + 1), start: start + 1 };
+}
+
+function readRouteDocs(
+  optionsObject: string | undefined,
+  staticContext: StaticScanContext,
+  context: RouteProjectionContext,
+): {
   docsSummary: string | null;
   hasDocsSummary: boolean;
   operationId: string | null;
@@ -244,46 +378,104 @@ function readRouteDocs(optionsArg: string | undefined): {
     responses: [],
   };
 
-  const options = optionsArg?.trim();
-  if (!options?.startsWith("{")) {
+  if (!optionsObject) {
     return empty;
   }
 
-  const docsMatch = /\bdocs\s*:/u.exec(options);
-  if (!docsMatch) {
-    return empty;
-  }
-
-  const docsOpen = options.indexOf("{", docsMatch.index);
-  const docsObject = readBalanced(options, docsOpen, "{", "}");
-  if (!docsObject) {
-    return empty;
-  }
-
-  const summary = readStringProperty(docsObject, "summary");
-  const operationId = readStringProperty(docsObject, "operationId");
+  const docsValue = readObjectEntryValue(optionsObject, "docs");
+  if (docsValue === undefined) return empty;
+  const docsObject = readStaticObjectExpression(
+    docsValue,
+    staticContext,
+    context,
+    "RouteOptions.docs",
+  );
+  const summary = readOptionalStaticStringProperty(
+    docsObject,
+    "summary",
+    staticContext,
+    context,
+    "RouteOptions.docs.summary",
+  );
+  const operationId = readOptionalStaticStringProperty(
+    docsObject,
+    "operationId",
+    staticContext,
+    context,
+    "RouteOptions.docs.operationId",
+  );
 
   return {
     docsSummary: summary,
     hasDocsSummary: Boolean(summary?.trim()),
     operationId,
-    tags: readStringArrayProperty(docsObject, "tags"),
-    hidden: readBooleanProperty(docsObject, "hidden"),
-    responses: readRouteResponseDefinitions(docsObject, "docs.responses"),
+    tags: readStaticStringArrayProperty(
+      docsObject,
+      "tags",
+      staticContext,
+      context,
+      "RouteOptions.docs.tags",
+    ),
+    hidden: readStaticBooleanProperty(
+      docsObject,
+      "hidden",
+      staticContext,
+      context,
+      "RouteOptions.docs.hidden",
+      false,
+    ),
+    responses: readRouteResponseDefinitions(
+      docsObject,
+      "docs.responses",
+      staticContext,
+      context,
+    ),
   };
 }
 
 function createRouteSchemaContract(
+  optionsObject: string | undefined,
   responses: readonly StaticRouteResponseDefinition[],
   method: string,
+  staticContext: StaticScanContext,
+  context: RouteProjectionContext,
 ): VextRouteSchemaContractV1 {
+  let request: VextRouteSchemaContractV1["request"] = {};
+  const validateValue = optionsObject
+    ? readObjectEntryValue(optionsObject, "validate")
+    : undefined;
+  if (validateValue !== undefined) {
+    const validate = parseStaticSchemaValue(
+      validateValue,
+      staticContext,
+      `${formatProjectionContext(context)} RouteOptions.validate`,
+    );
+    if (!isStaticSchemaObject(validate)) {
+      throw projectionError(
+        context,
+        "RouteOptions.validate must be statically resolvable to an object literal",
+      );
+    }
+    try {
+      request = projectRouteSchemaContract(
+        { validate } as unknown as RouteOptions,
+        method,
+      ).request;
+    } catch (error) {
+      throw projectionError(
+        context,
+        `RouteOptions.validate projection failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
   return {
     schemaVersion: 1,
-    request: {},
+    request,
     responses: responses
       .map((response) => {
         const schema = response.schema
-          ? createStaticResponseSchema(response, method)
+          ? createStaticResponseSchema(response, method, context)
           : undefined;
         return {
           status: response.status,
@@ -298,6 +490,7 @@ function createRouteSchemaContract(
 function createStaticResponseSchema(
   response: StaticRouteResponseDefinition,
   method: string,
+  context: RouteProjectionContext,
 ): VextSchemaIRV1 | undefined {
   try {
     if (
@@ -320,44 +513,73 @@ function createStaticResponseSchema(
       digest: createDigest(schema),
       ...(ref ? { ref } : {}),
     };
-  } catch {
-    // Static indexing deliberately fails closed for dynamic or unsupported
-    // expressions. Runtime OpenAPI validation still owns those declarations.
-    return undefined;
+  } catch (error) {
+    throw projectionError(
+      context,
+      `${response.source}.${response.status}.schema could not be projected: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 
 function readRouteResponseDefinitions(
   containerObject: string | undefined,
   source: "responses" | "docs.responses",
+  staticContext: StaticScanContext,
+  context: RouteProjectionContext,
 ): StaticRouteResponseDefinition[] {
   if (!containerObject) return [];
-  const responsesObject = readObjectProperty(containerObject, "responses");
-  if (!responsesObject) return [];
+  const responsesValue = readObjectEntryValue(containerObject, "responses");
+  if (responsesValue === undefined) return [];
+  const responsesObject = readStaticObjectExpression(
+    responsesValue,
+    staticContext,
+    context,
+    source,
+  );
 
-  const definitions = readObjectEntries(responsesObject)
-    .map(({ key, value }) => {
+  const definitions = readObjectEntries(responsesObject).map(
+    ({ key, value }) => {
       const rawStatus = readObjectEntryKey(key);
-      const responseObject = value.trim();
-      if (!rawStatus || !responseObject.startsWith("{")) return null;
+      if (!rawStatus) {
+        throw projectionError(
+          context,
+          `${source} contains a response selector that is not statically resolvable`,
+        );
+      }
+      const responseObject = readStaticObjectExpression(
+        value,
+        staticContext,
+        context,
+        `${source}.${rawStatus}`,
+      );
       const status =
         source === "responses"
           ? normalizeRuntimeResponseSelector(rawStatus)
           : normalizeDocumentedResponseSelector(rawStatus);
 
+      const contentTypeValue = readObjectEntryValue(
+        responseObject,
+        "contentType",
+      );
       const contentType =
-        readStringLiteral(
-          readObjectEntryValue(responseObject, "contentType") ?? "",
-        ) ?? "application/json";
+        contentTypeValue === undefined
+          ? "application/json"
+          : readStaticStringExpression(
+              contentTypeValue,
+              staticContext,
+              context,
+              `${source}.${status}.contentType must be statically resolvable`,
+            );
+      const schemaValue = readObjectEntryValue(responseObject, "schema");
       const schema = parseStaticResponseSchema(
-        readObjectEntryValue(responseObject, "schema"),
+        schemaValue,
+        staticContext,
+        context,
+        `${source}.${status}.schema`,
       );
       return { status, contentType, source, ...(schema ? { schema } : {}) };
-    })
-    .filter(
-      (response): response is StaticRouteResponseDefinition =>
-        response !== null,
-    );
+    },
+  );
 
   const selectors = new Set<string>();
   for (const definition of definitions) {
@@ -406,19 +628,41 @@ function mergeRouteResponseDefinitions(
 
 function parseStaticResponseSchema(
   value: string | undefined,
+  staticContext: StaticScanContext,
+  context: RouteProjectionContext,
+  label: string,
 ): Record<string, unknown> | string | undefined {
-  const parsed = parseStaticSchemaValue(value);
-  return typeof parsed === "string" || isStaticSchemaObject(parsed)
-    ? parsed
-    : undefined;
+  if (value === undefined) return undefined;
+  const parsed = parseStaticSchemaValue(
+    value,
+    staticContext,
+    `${formatProjectionContext(context)} ${label}`,
+  );
+  if (typeof parsed === "string" || isStaticSchemaObject(parsed)) {
+    return parsed;
+  }
+  throw projectionError(
+    context,
+    `${label} must be statically resolvable to a supported schema`,
+  );
 }
 
-function parseStaticSchemaValue(value: string | undefined): unknown {
+function parseStaticSchemaValue(
+  value: string | undefined,
+  staticContext: StaticScanContext,
+  label: string,
+): unknown {
   if (!value) return undefined;
-  const string = readStringLiteral(value);
+  const resolved = resolveStaticExpressionSource(
+    value,
+    staticContext,
+    label,
+    false,
+  );
+  const string = readStringLiteral(resolved);
   if (string !== null) return string;
 
-  const trimmed = value.trim();
+  const trimmed = stripStaticSyntax(resolved);
   if (trimmed === "true") return true;
   if (trimmed === "false") return false;
   if (trimmed === "null") return null;
@@ -426,46 +670,66 @@ function parseStaticSchemaValue(value: string | undefined): unknown {
     return Number(trimmed);
   }
   if (trimmed.startsWith("{")) {
-    return parseStaticSchemaObject(trimmed);
+    return parseStaticSchemaObject(trimmed, staticContext, label);
   }
   if (trimmed.startsWith("[")) {
-    return parseStaticSchemaArray(trimmed);
+    return parseStaticSchemaArray(trimmed, staticContext, label);
   }
   return undefined;
 }
 
 function parseStaticSchemaObject(
   source: string,
+  staticContext: StaticScanContext,
+  label: string,
 ): Record<string, unknown> | undefined {
   const object = readBalanced(source, 0, "{", "}");
-  if (!object || object.length !== source.trim().length) return undefined;
+  if (!object || object.length !== stripStaticSyntax(source).length) {
+    return undefined;
+  }
 
   const result: Record<string, unknown> = {};
   const members = splitTopLevelArgs(object.slice(1, -1));
   if (members.length === 1 && !members[0]) return result;
   for (const [index, member] of members.entries()) {
     if (!member && index === members.length - 1) continue;
+    if (member.trimStart().startsWith("...")) return undefined;
     const separator = findTopLevelPropertySeparator(member);
-    if (separator < 1) return undefined;
-    const key = member.slice(0, separator).trim();
-    const value = member.slice(separator + 1).trim();
+    const shorthand = separator < 1 ? member.trim() : undefined;
+    const key = separator < 1 ? shorthand! : member.slice(0, separator).trim();
+    const value =
+      separator < 1 ? shorthand! : member.slice(separator + 1).trim();
     const property = readObjectEntryKey(key);
-    const parsed = parseStaticSchemaValue(value);
+    const parsed = parseStaticSchemaValue(
+      value,
+      staticContext,
+      `${label}.${property ?? "<unknown>"}`,
+    );
     if (!property || parsed === undefined) return undefined;
     result[property] = parsed;
   }
   return result;
 }
 
-function parseStaticSchemaArray(source: string): unknown[] | undefined {
+function parseStaticSchemaArray(
+  source: string,
+  staticContext: StaticScanContext,
+  label: string,
+): unknown[] | undefined {
   const array = readBalanced(source, 0, "[", "]");
-  if (!array || array.length !== source.trim().length) return undefined;
+  if (!array || array.length !== stripStaticSyntax(source).length) {
+    return undefined;
+  }
   const members = splitTopLevelArgs(array.slice(1, -1));
   if (members.length === 1 && !members[0]) return [];
 
   const values: unknown[] = [];
-  for (const member of members) {
-    const parsed = parseStaticSchemaValue(member);
+  for (const [index, member] of members.entries()) {
+    const parsed = parseStaticSchemaValue(
+      member,
+      staticContext,
+      `${label}[${index}]`,
+    );
     if (parsed === undefined) return undefined;
     values.push(parsed);
   }
@@ -478,17 +742,300 @@ function isStaticSchemaObject(
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function readStaticObjectExpression(
+  value: string | undefined,
+  staticContext: StaticScanContext,
+  context: RouteProjectionContext,
+  label: string,
+  allowHelperWrapper = false,
+): string {
+  if (value === undefined) {
+    throw projectionError(context, `${label} is missing`);
+  }
+  const resolved = stripStaticSyntax(
+    resolveStaticExpressionSource(
+      value,
+      staticContext,
+      `${formatProjectionContext(context)} ${label}`,
+      allowHelperWrapper,
+    ),
+  );
+  const object = resolved.startsWith("{")
+    ? readBalanced(resolved, 0, "{", "}")
+    : null;
+  if (!object || object.length !== resolved.length) {
+    throw projectionError(
+      context,
+      `${label} must be statically resolvable to an object literal`,
+    );
+  }
+  if (
+    splitTopLevelArgs(object.slice(1, -1)).some((member) =>
+      member.trimStart().startsWith("..."),
+    )
+  ) {
+    throw projectionError(
+      context,
+      `${label} cannot contain object spreads because their keys are runtime-owned`,
+    );
+  }
+  if (
+    splitTopLevelArgs(object.slice(1, -1)).some((member) => {
+      const separator = findTopLevelPropertySeparator(member);
+      return (
+        separator >= 1 && member.slice(0, separator).trim().startsWith("[")
+      );
+    })
+  ) {
+    throw projectionError(
+      context,
+      `${label} cannot contain computed property keys because their identities are runtime-owned`,
+    );
+  }
+  return object;
+}
+
+function readStaticStringExpression(
+  value: string | undefined,
+  staticContext: StaticScanContext,
+  context: RouteProjectionContext,
+  failureMessage: string,
+): string {
+  if (value !== undefined) {
+    const resolved = resolveStaticExpressionSource(
+      value,
+      staticContext,
+      `${formatProjectionContext(context)} ${failureMessage}`,
+      false,
+    );
+    const string = readStringLiteral(resolved);
+    if (string !== null) return string;
+  }
+  throw projectionError(context, failureMessage);
+}
+
+function readOptionalStaticStringProperty(
+  objectLiteral: string,
+  key: string,
+  staticContext: StaticScanContext,
+  context: RouteProjectionContext,
+  label: string,
+): string | null {
+  const value = readObjectEntryValue(objectLiteral, key);
+  return value === undefined
+    ? null
+    : readStaticStringExpression(
+        value,
+        staticContext,
+        context,
+        `${label} must be statically resolvable`,
+      );
+}
+
+function readStaticStringArrayProperty(
+  objectLiteral: string,
+  key: string,
+  staticContext: StaticScanContext,
+  context: RouteProjectionContext,
+  label: string,
+): string[] {
+  const value = readObjectEntryValue(objectLiteral, key);
+  if (value === undefined) return [];
+  const parsed = parseStaticSchemaValue(
+    value,
+    staticContext,
+    `${formatProjectionContext(context)} ${label}`,
+  );
+  if (
+    !Array.isArray(parsed) ||
+    parsed.some((item) => typeof item !== "string")
+  ) {
+    throw projectionError(
+      context,
+      `${label} must be statically resolvable to a string array`,
+    );
+  }
+  return parsed as string[];
+}
+
+function readStaticBooleanProperty(
+  objectLiteral: string,
+  key: string,
+  staticContext: StaticScanContext,
+  context: RouteProjectionContext,
+  label: string,
+  fallback: boolean,
+): boolean {
+  const value = readObjectEntryValue(objectLiteral, key);
+  if (value === undefined) return fallback;
+  const parsed = parseStaticSchemaValue(
+    value,
+    staticContext,
+    `${formatProjectionContext(context)} ${label}`,
+  );
+  if (typeof parsed !== "boolean") {
+    throw projectionError(
+      context,
+      `${label} must be statically resolvable to a boolean`,
+    );
+  }
+  return parsed;
+}
+
+function resolveStaticExpressionSource(
+  value: string,
+  staticContext: StaticScanContext,
+  label: string,
+  allowHelperWrapper: boolean,
+  resolving = new Set<string>(),
+): string {
+  const expression = stripStaticSyntax(value);
+  if (/^[A-Za-z_$][\w$]*$/u.test(expression)) {
+    if (staticContext.ambiguousBindings.has(expression)) {
+      throw new Error(
+        `[vextjs] ${label} refers to ambiguous same-file const binding ${JSON.stringify(expression)}.`,
+      );
+    }
+    const binding = staticContext.bindings.get(expression);
+    if (binding === undefined) return expression;
+    if (resolving.has(expression)) {
+      throw new Error(`[vextjs] ${label} contains a circular const binding.`);
+    }
+    const next = new Set(resolving);
+    next.add(expression);
+    return resolveStaticExpressionSource(
+      binding,
+      staticContext,
+      label,
+      allowHelperWrapper,
+      next,
+    );
+  }
+
+  if (allowHelperWrapper) {
+    const masked = createLexicalMask(expression);
+    const call = /^(?:[A-Za-z_$][\w$]*\.)*[A-Za-z_$][\w$]*\s*\(/u.exec(masked);
+    if (call) {
+      const openParen = masked.indexOf("(", call.index);
+      const closeParen = findMatchingIndex(masked, openParen, "(", ")");
+      if (closeParen === masked.trimEnd().length - 1) {
+        const [first] = splitTopLevelArgs(
+          expression.slice(openParen + 1, closeParen),
+        );
+        if (!first) {
+          throw new Error(
+            `[vextjs] ${label} helper wrapper must receive a statically resolvable options object as its first argument.`,
+          );
+        }
+        return resolveStaticExpressionSource(
+          first,
+          staticContext,
+          label,
+          true,
+          resolving,
+        );
+      }
+    }
+  }
+
+  return expression;
+}
+
+function stripStaticSyntax(value: string): string {
+  let expression = value.trim();
+  let previous = "";
+  while (expression !== previous) {
+    previous = expression;
+    expression = expression
+      .replace(/\s+as\s+const\s*$/u, "")
+      .replace(/\s+as\s+[A-Za-z_$][\w$]*(?:\s*<[^>]*>)?(?:\[\])?\s*$/u, "")
+      .replace(
+        /\s+satisfies\s+[A-Za-z_$][\w$]*(?:\s*<[^>]*>)?(?:\[\])?\s*$/u,
+        "",
+      )
+      .trim();
+    if (expression.startsWith("(")) {
+      const close = findMatchingIndex(
+        createLexicalMask(expression),
+        0,
+        "(",
+        ")",
+      );
+      if (close === expression.length - 1) {
+        expression = expression.slice(1, -1).trim();
+      }
+    }
+  }
+  return expression;
+}
+
+function collectConstBindings(source: string): StaticScanContext {
+  const bindings = new Map<string, string>();
+  const ambiguousBindings = new Set<string>();
+  const masked = createLexicalMask(source);
+  const pattern = /\bconst\s+([A-Za-z_$][\w$]*)\s*=/gu;
+  for (const match of masked.matchAll(pattern)) {
+    const name = match[1]!;
+    const start = match.index! + match[0].length;
+    const end = findStaticExpressionEnd(masked, start);
+    const expression = source.slice(start, end).trim();
+    if (!expression || ambiguousBindings.has(name)) continue;
+    if (bindings.has(name)) {
+      bindings.delete(name);
+      ambiguousBindings.add(name);
+      continue;
+    }
+    bindings.set(name, expression);
+  }
+  return { bindings, ambiguousBindings };
+}
+
+function findStaticExpressionEnd(masked: string, start: number): number {
+  let depth = 0;
+  for (let index = start; index < masked.length; index++) {
+    const char = masked[index]!;
+    if (char === "{" || char === "(" || char === "[") depth++;
+    else if (char === "}" || char === ")" || char === "]") {
+      if (depth === 0) return index;
+      depth--;
+    } else if (char === ";" && depth === 0) {
+      return index;
+    } else if ((char === "\n" || char === "\r") && depth === 0) {
+      const current = masked.slice(start, index).trim();
+      if (current) return index;
+    }
+  }
+  return masked.length;
+}
+
+function formatProjectionContext(context: RouteProjectionContext): string {
+  return `${context.fileRelativePath} ${context.method}${context.routePath ? ` ${context.routePath}` : ""}`;
+}
+
+function projectionError(
+  context: RouteProjectionContext,
+  message: string,
+): Error {
+  return new Error(`[vextjs] ${formatProjectionContext(context)} ${message}.`);
+}
+
 function readObjectEntries(
   objectLiteral: string,
 ): Array<{ key: string; value: string }> {
-  const object = objectLiteral.trim();
+  const object = stripStaticSyntax(objectLiteral);
   if (!object.startsWith("{") || !object.endsWith("}")) return [];
 
   const entries: Array<{ key: string; value: string }> = [];
   for (const member of splitTopLevelArgs(object.slice(1, -1))) {
     if (!member) continue;
     const separator = findTopLevelPropertySeparator(member);
-    if (separator < 1) continue;
+    if (separator < 1) {
+      const shorthand = member.trim();
+      if (/^[A-Za-z_$][\w$]*$/u.test(shorthand)) {
+        entries.push({ key: shorthand, value: shorthand });
+      }
+      continue;
+    }
     entries.push({
       key: member.slice(0, separator).trim(),
       value: member.slice(separator + 1).trim(),
@@ -501,9 +1048,12 @@ function readObjectEntryValue(
   objectLiteral: string,
   expectedKey: string,
 ): string | undefined {
-  return readObjectEntries(objectLiteral).find(
-    ({ key }) => readObjectEntryKey(key) === expectedKey,
-  )?.value;
+  let resolved: string | undefined;
+  // JavaScript object literals use the last duplicate data property.
+  for (const { key, value } of readObjectEntries(objectLiteral)) {
+    if (readObjectEntryKey(key) === expectedKey) resolved = value;
+  }
+  return resolved;
 }
 
 function readObjectEntryKey(value: string): string | null {
@@ -515,21 +1065,12 @@ function readObjectEntryKey(value: string): string | null {
 }
 
 function findTopLevelPropertySeparator(source: string): number {
+  const masked = createLexicalMask(source);
   let depth = 0;
-  let quote: string | null = null;
-  let escaped = false;
 
-  for (let index = 0; index < source.length; index++) {
-    const char = source[index]!;
-    if (quote) {
-      if (escaped) escaped = false;
-      else if (char === "\\") escaped = true;
-      else if (char === quote) quote = null;
-      continue;
-    }
-    if (char === '"' || char === "'" || char === "`") {
-      quote = char;
-    } else if (char === "{" || char === "(" || char === "[") {
+  for (let index = 0; index < masked.length; index++) {
+    const char = masked[index]!;
+    if (char === "{" || char === "(" || char === "[") {
       depth++;
     } else if (char === "}" || char === ")" || char === "]") {
       depth--;
@@ -549,140 +1090,14 @@ function compareResponseStatus(left: string, right: string): number {
   return left.localeCompare(right);
 }
 
-function readStringProperty(objectLiteral: string, key: string): string | null {
-  const pattern = new RegExp(
-    `\\b${escapeRegExp(key)}\\s*:\\s*([\"'\`])([\\s\\S]*?)\\1`,
-    "u",
-  );
-  return pattern.exec(objectLiteral)?.[2] ?? null;
-}
-
-function readNumberProperty(objectLiteral: string, key: string): number | null {
-  const pattern = new RegExp(
-    `\\b${escapeRegExp(key)}\\s*:\\s*(-?(?:\\d+\\.?\\d*|\\.\\d+))\\b`,
-    "u",
-  );
-  const match = pattern.exec(objectLiteral);
-  return match ? Number(match[1]) : null;
-}
-
-function readOptionalBooleanProperty(
-  objectLiteral: string,
-  key: string,
-): boolean | undefined {
-  const pattern = new RegExp(
-    `\\b${escapeRegExp(key)}\\s*:\\s*(true|false)\\b`,
-    "u",
-  );
-  const value = pattern.exec(objectLiteral)?.[1];
-  return value === "true" ? true : value === "false" ? false : undefined;
-}
-
-function readObjectProperty(objectLiteral: string, key: string): string | null {
-  const value = readObjectEntryValue(objectLiteral, key)?.trim();
-  if (!value?.startsWith("{")) return null;
-  return readBalanced(value, 0, "{", "}");
-}
-
-function readObjectArrayProperty(
-  objectLiteral: string,
-  key: string,
-): Array<Record<string, string | number | boolean>> | undefined {
-  const pattern = new RegExp(`\\b${escapeRegExp(key)}\\s*:\\s*\\[`, "u");
-  const match = pattern.exec(objectLiteral);
-  if (!match) return undefined;
-  const arrayText = readBalanced(
-    objectLiteral,
-    objectLiteral.indexOf("[", match.index),
-    "[",
-    "]",
-  );
-  if (!arrayText) return undefined;
-
-  const members = splitTopLevelArgs(arrayText.slice(1, -1));
-  if (members.length === 1 && !members[0]) return [];
-  const entries: Array<Record<string, string | number | boolean>> = [];
-  for (const member of members) {
-    if (!member.startsWith("{") || !member.endsWith("}")) return undefined;
-    const values: Record<string, string | number | boolean> = {};
-    const properties = splitTopLevelArgs(member.slice(1, -1));
-    if (properties.length === 1 && !properties[0]) {
-      entries.push(values);
-      continue;
-    }
-    for (const property of properties) {
-      const separator = property.indexOf(":");
-      if (separator < 1) return undefined;
-      const rawKey = property.slice(0, separator).trim();
-      const key = readStringLiteral(rawKey) ?? rawKey;
-      const rawValue = property.slice(separator + 1).trim();
-      const value = readLiteralScalar(rawValue);
-      if (!key || value === undefined) return undefined;
-      values[key] = value;
-    }
-    entries.push(values);
-  }
-  return entries;
-}
-
-function readLiteralScalar(
-  value: string,
-): string | number | boolean | undefined {
-  const string = readStringLiteral(value);
-  if (string !== null) return string;
-  if (value === "true") return true;
-  if (value === "false") return false;
-  const number = Number(value);
-  return Number.isFinite(number) && value.trim() !== "" ? number : undefined;
-}
-
-function compactObject<T extends Record<string, unknown>>(value: T): T {
-  return Object.fromEntries(
-    Object.entries(value).filter(([, item]) => item !== undefined),
-  ) as T;
-}
-
-function readStringArrayProperty(objectLiteral: string, key: string): string[] {
-  const pattern = new RegExp(`\\b${escapeRegExp(key)}\\s*:\\s*\\[`, "u");
-  const match = pattern.exec(objectLiteral);
-  if (!match) return [];
-
-  const openBracket = objectLiteral.indexOf("[", match.index);
-  const arrayText = readBalanced(objectLiteral, openBracket, "[", "]");
-  if (!arrayText) return [];
-
-  return [...arrayText.matchAll(/(["'`])([\s\S]*?)\1/gu)]
-    .map((item) => item[2])
-    .filter((item): item is string => Boolean(item));
-}
-
-function readBooleanProperty(objectLiteral: string, key: string): boolean {
-  const pattern = new RegExp(`\\b${escapeRegExp(key)}\\s*:\\s*true\\b`, "u");
-  return pattern.test(objectLiteral);
-}
-
 function splitTopLevelArgs(argsText: string): string[] {
   const args: string[] = [];
+  const masked = createLexicalMask(argsText);
   let start = 0;
   let depth = 0;
-  let quote: string | null = null;
-  let escaped = false;
 
-  for (let i = 0; i < argsText.length; i++) {
-    const char = argsText[i]!;
-
-    if (quote) {
-      if (escaped) escaped = false;
-      else if (char === "\\") escaped = true;
-      else if (char === quote) quote = null;
-      continue;
-    }
-
-    if (char === '"' || char === "'" || char === "`") {
-      quote = char;
-      continue;
-    }
-
+  for (let i = 0; i < masked.length; i++) {
+    const char = masked[i]!;
     if (char === "{" || char === "(" || char === "[") depth++;
     else if (char === "}" || char === ")" || char === "]") depth--;
     else if (char === "," && depth === 0) {
@@ -696,16 +1111,39 @@ function splitTopLevelArgs(argsText: string): string[] {
 }
 
 function readStringLiteral(value: string): string | null {
-  const trimmed = value.trim();
+  const trimmed = stripStaticSyntax(value);
   const quote = trimmed[0];
   if (quote !== '"' && quote !== "'" && quote !== "`") {
     return null;
   }
-  const end = trimmed.indexOf(quote, 1);
-  if (end < 0) {
-    return null;
+  if (quote === "`" && trimmed.includes("${")) return null;
+  let escaped = false;
+  for (let index = 1; index < trimmed.length; index++) {
+    const char = trimmed[index]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      const escapedCharacter = trimmed[index + 1];
+      if (
+        escapedCharacter !== "\\" &&
+        escapedCharacter !== '"' &&
+        escapedCharacter !== "'" &&
+        escapedCharacter !== "`"
+      ) {
+        return null;
+      }
+      escaped = true;
+      continue;
+    }
+    if (char === quote) {
+      return index === trimmed.length - 1
+        ? trimmed.slice(1, index).replace(/\\([\\"'`])/gu, "$1")
+        : null;
+    }
   }
-  return trimmed.slice(1, end);
+  return null;
 }
 
 function readBalanced(
@@ -715,36 +1153,118 @@ function readBalanced(
   closeChar: "}" | ")" | "]",
 ): string | null {
   if (openIndex < 0 || source[openIndex] !== openChar) return null;
+  const closeIndex = findMatchingIndex(
+    createLexicalMask(source),
+    openIndex,
+    openChar,
+    closeChar,
+  );
+  return closeIndex < 0 ? null : source.slice(openIndex, closeIndex + 1);
+}
 
+function findMatchingIndex(
+  maskedSource: string,
+  openIndex: number,
+  openChar: "{" | "(" | "[",
+  closeChar: "}" | ")" | "]",
+): number {
+  if (openIndex < 0 || maskedSource[openIndex] !== openChar) return -1;
   let depth = 0;
-  let quote: string | null = null;
-  let escaped = false;
-
-  for (let i = openIndex; i < source.length; i++) {
-    const char = source[i]!;
-
-    if (quote) {
-      if (escaped) escaped = false;
-      else if (char === "\\") escaped = true;
-      else if (char === quote) quote = null;
-      continue;
-    }
-
-    if (char === '"' || char === "'" || char === "`") {
-      quote = char;
-      continue;
-    }
-
+  for (let index = openIndex; index < maskedSource.length; index++) {
+    const char = maskedSource[index]!;
     if (char === openChar) depth++;
     else if (char === closeChar) {
       depth--;
-      if (depth === 0) {
-        return source.slice(openIndex, i + 1);
-      }
+      if (depth === 0) return index;
     }
   }
+  return -1;
+}
 
-  return null;
+function createLexicalMask(source: string): string {
+  const chars = source.split("");
+  const blank = (index: number) => {
+    if (chars[index] !== "\n" && chars[index] !== "\r") chars[index] = " ";
+  };
+
+  for (let index = 0; index < source.length; ) {
+    const char = source[index]!;
+    const next = source[index + 1];
+    if (char === "/" && next === "/") {
+      blank(index++);
+      blank(index++);
+      while (index < source.length && source[index] !== "\n") blank(index++);
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      blank(index++);
+      blank(index++);
+      while (index < source.length) {
+        const current = source[index]!;
+        const following = source[index + 1];
+        blank(index++);
+        if (current === "*" && following === "/") {
+          blank(index++);
+          break;
+        }
+      }
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      const quote = char;
+      blank(index++);
+      let escaped = false;
+      while (index < source.length) {
+        const current = source[index]!;
+        blank(index++);
+        if (escaped) escaped = false;
+        else if (current === "\\") escaped = true;
+        else if (current === quote) break;
+      }
+      continue;
+    }
+    if (char === "/" && isRegexLiteralStart(chars, index)) {
+      blank(index++);
+      let escaped = false;
+      let inClass = false;
+      while (index < source.length) {
+        const current = source[index]!;
+        blank(index++);
+        if (escaped) escaped = false;
+        else if (current === "\\") escaped = true;
+        else if (current === "[") inClass = true;
+        else if (current === "]") inClass = false;
+        else if (current === "/" && !inClass) break;
+      }
+      while (index < source.length && /[A-Za-z]/u.test(source[index]!)) {
+        blank(index++);
+      }
+      continue;
+    }
+    index++;
+  }
+  return chars.join("");
+}
+
+function isRegexLiteralStart(chars: readonly string[], index: number): boolean {
+  let previous = index - 1;
+  while (previous >= 0 && /\s/u.test(chars[previous]!)) previous--;
+  if (previous < 0) return true;
+  if (/[({[=,:;!&|?+\-*%^~<>]/u.test(chars[previous]!)) return true;
+
+  let wordEnd = previous + 1;
+  while (previous >= 0 && /[A-Za-z_$]/u.test(chars[previous]!)) previous--;
+  const word = chars.slice(previous + 1, wordEnd).join("");
+  return [
+    "return",
+    "throw",
+    "case",
+    "delete",
+    "void",
+    "typeof",
+    "yield",
+    "await",
+  ].includes(word);
 }
 
 function filePathToRoutePrefix(filePath: string, routesDir: string): string {

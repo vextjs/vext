@@ -14,6 +14,11 @@ import type {
   VextFrontendMode,
   VextFrontendUserConfig,
 } from "../contract/types.js";
+import {
+  normalizeSeoMetadata,
+  normalizeSeoSafeText,
+  normalizeSeoTextList,
+} from "../contract/seo-normalization.js";
 
 export interface ResolveFrontendConfigOptions {
   rootDir: string;
@@ -307,18 +312,21 @@ function normalizeSeo(
       })
       .sort(([left], [right]) => left.localeCompare(right)),
   );
-  const titleTemplate = value.titleTemplate?.trim();
-  if (value.titleTemplate !== undefined && !titleTemplate) {
-    throw new Error(
-      "[vextjs] config.frontend.seo.titleTemplate must be a non-empty string.",
-    );
-  }
+  assertUniqueSeoOriginHosts(publicOrigin, origins);
+  const titleTemplate =
+    value.titleTemplate === undefined
+      ? undefined
+      : normalizeSeoSafeText(
+          value.titleTemplate,
+          "config.frontend.seo.titleTemplate",
+        );
   if (titleTemplate && !titleTemplate.includes("%s")) {
     throw new Error(
       '[vextjs] config.frontend.seo.titleTemplate must contain the "%s" placeholder.',
     );
   }
-  assertSeoMetadata(value.defaults, "config.frontend.seo.defaults");
+  const defaults =
+    normalizeSeoMetadata(value.defaults, "config.frontend.seo.defaults") ?? {};
 
   const sitemap = normalizeSitemap(value.sitemap);
   const robots = normalizeRobots(value.robots);
@@ -344,7 +352,7 @@ function normalizeSeo(
     publicOrigin,
     origins,
     titleTemplate,
-    defaults: value.defaults ?? {},
+    defaults,
     sitemap,
     robots,
   };
@@ -402,30 +410,76 @@ function normalizeRobots(
       '[vextjs] config.frontend.seo.robots.path must be "/robots.txt".',
     );
   }
-  const groups = value.groups ?? [{ userAgent: "*", allow: "/" }];
-  for (const [index, group] of groups.entries()) {
-    if (!isNonEmptyStringList(group.userAgent)) {
-      throw new Error(
-        `[vextjs] config.frontend.seo.robots.groups[${index}].userAgent must be a non-empty string or string array.`,
-      );
-    }
-    for (const key of ["allow", "disallow"] as const) {
-      if (group[key] !== undefined && !isNonEmptyStringList(group[key])) {
+  const groups = (value.groups ?? [{ userAgent: "*", allow: "/" }]).map(
+    (group, index) => {
+      if (!group || typeof group !== "object" || Array.isArray(group)) {
         throw new Error(
-          `[vextjs] config.frontend.seo.robots.groups[${index}].${key} must be a non-empty string or string array.`,
+          `[vextjs] config.frontend.seo.robots.groups[${index}] must be an object.`,
         );
       }
-    }
-    if (
-      group.crawlDelay !== undefined &&
-      (!Number.isFinite(group.crawlDelay) || group.crawlDelay < 0)
-    ) {
+      const userAgent = normalizeSeoTextList(
+        group.userAgent,
+        `config.frontend.seo.robots.groups[${index}].userAgent`,
+      );
+      const allow =
+        group.allow === undefined
+          ? undefined
+          : normalizeSeoTextList(
+              group.allow,
+              `config.frontend.seo.robots.groups[${index}].allow`,
+            );
+      const disallow =
+        group.disallow === undefined
+          ? undefined
+          : normalizeSeoTextList(
+              group.disallow,
+              `config.frontend.seo.robots.groups[${index}].disallow`,
+            );
+      if (
+        group.crawlDelay !== undefined &&
+        (!Number.isFinite(group.crawlDelay) || group.crawlDelay < 0)
+      ) {
+        throw new Error(
+          `[vextjs] config.frontend.seo.robots.groups[${index}].crawlDelay must be a non-negative number.`,
+        );
+      }
+      return {
+        userAgent,
+        ...(allow !== undefined ? { allow } : {}),
+        ...(disallow !== undefined ? { disallow } : {}),
+        ...(group.crawlDelay !== undefined
+          ? { crawlDelay: group.crawlDelay }
+          : {}),
+      };
+    },
+  );
+  return { mode, path: "/robots.txt", groups };
+}
+
+function assertUniqueSeoOriginHosts(
+  publicOrigin: string | undefined,
+  origins: Readonly<Record<string, string>>,
+): void {
+  const owners = new Map<string, string>();
+  const candidates = [
+    ...(publicOrigin
+      ? [["config.frontend.seo.publicOrigin", publicOrigin] as const]
+      : []),
+    ...Object.entries(origins).map(
+      ([key, origin]) =>
+        [`config.frontend.seo.origins.${key}`, origin] as const,
+    ),
+  ];
+  for (const [label, origin] of candidates) {
+    const host = new URL(origin).host.toLowerCase();
+    const existing = owners.get(host);
+    if (existing) {
       throw new Error(
-        `[vextjs] config.frontend.seo.robots.groups[${index}].crawlDelay must be a non-negative number.`,
+        `[vextjs] ${existing} and ${label} share request host "${host}"; runtime Host selection cannot disambiguate path-specific origins.`,
       );
     }
+    owners.set(host, label);
   }
-  return { mode, path: "/robots.txt", groups };
 }
 
 function normalizePublicOrigin(
@@ -490,63 +544,6 @@ function hasDotPathSegment(value: string): boolean {
   return value
     .split("/")
     .some((segment) => segment === "." || segment === "..");
-}
-
-function assertSeoMetadata(value: unknown, label: string): void {
-  if (value === undefined) return;
-  if (!isJsonSafeRecord(value)) {
-    throw new Error(`[vextjs] ${label} must be a JSON-safe object.`);
-  }
-  const canonical = value.canonical;
-  if (canonical !== undefined) {
-    normalizeSeoPathname(canonical, `${label}.canonical`);
-  }
-}
-
-function normalizeSeoPathname(value: unknown, label: string): string {
-  if (
-    typeof value !== "string" ||
-    !value.startsWith("/") ||
-    value.startsWith("//") ||
-    value.includes("?") ||
-    value.includes("#")
-  ) {
-    throw new Error(
-      `[vextjs] ${label} must be an absolute pathname without query or hash.`,
-    );
-  }
-  return value;
-}
-
-function isJsonSafeRecord(value: unknown): value is Record<string, unknown> {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    !Array.isArray(value) &&
-    Object.values(value).every(isJsonSafeValue)
-  );
-}
-
-function isJsonSafeValue(value: unknown): boolean {
-  if (
-    value === null ||
-    typeof value === "string" ||
-    typeof value === "boolean"
-  ) {
-    return true;
-  }
-  if (typeof value === "number") return Number.isFinite(value);
-  if (Array.isArray(value)) return value.every(isJsonSafeValue);
-  return isJsonSafeRecord(value);
-}
-
-function isNonEmptyStringList(value: unknown): boolean {
-  return (
-    (typeof value === "string" && value.trim().length > 0) ||
-    (Array.isArray(value) &&
-      value.length > 0 &&
-      value.every((entry) => typeof entry === "string" && entry.trim()))
-  );
 }
 
 function normalizeExternalRuntime(

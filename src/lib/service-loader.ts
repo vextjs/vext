@@ -375,9 +375,9 @@ async function loadServiceFile(
         `         ${(err as Error).message}`,
     );
   } finally {
-    // 临时编译产物 best-effort 清理（不阻塞加载流程，失败静默忽略）
+    // 返回调用方前完成 best-effort 清理，避免目录清理与未决 unlink 竞态。
     if (tmpFile) {
-      unlink(tmpFile).catch(() => {});
+      await unlink(tmpFile).catch(() => {});
     }
   }
 }

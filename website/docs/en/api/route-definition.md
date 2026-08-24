@@ -243,10 +243,24 @@ it is not PPR or a second page route.
 the SSR page body but removes the Vext/React browser runtime, hydration data,
 and route JS preload. It cannot be combined with `clientOnly` or disabled SSR.
 `seo` is static, JSON-safe route metadata and is merged before per-render SEO.
-For a three-argument route, the route-options argument and its
-`RouteOptions.frontend` value must each be an `inline object literal` so the
-build index and runtime cannot diverge. Imported variables and helper return
-values are not executed by the build index; use `res.render(..., { seo })` for
+Build-indexed paths and route metadata use a finite static grammar so the build
+index and runtime cannot diverge. The index accepts literals, same-file `const`
+bindings, TypeScript `as const` / simple `as Type` / `satisfies` wrappers, and a
+helper call whose first argument is a statically projectable options object.
+The helper body is not executed, so metadata added only inside that helper is
+not projected. Comments, strings, template text, and regular expressions are
+ignored during structural matching.
+
+Each `app.get(...)` / `app.post(...)` registration must be a direct top-level
+statement in the `defineRoutes` callback. Conditional or nested registration
+fails the static projection because the build index cannot guarantee whether
+runtime control flow executes it.
+
+Imported values, computed expressions, and template literals with
+interpolation are not executed. If a route path, `validate` location, or
+response schema cannot be projected, build/doctor/typegen fails with file,
+HTTP method, and route context instead of silently omitting the route or
+emitting an empty contract. Use `res.render(..., { seo })` for
 request-dependent metadata. See
 [SEO, Sitemap, and Robots](/frontend/seo-sitemap).
 
@@ -299,7 +313,10 @@ app.put(
 
 ## validate
 
-Declarative parameter validation, based on `schema-dsl` DSL syntax. The framework automatically performs verification before the handler is executed. If verification fails, a `422` error is returned.
+Declarative parameter validation, based on `schema-dsl` DSL syntax. The
+framework validates before the handler runs. An invalid `param` (path
+parameter) returns HTTP `400`; invalid `query`, `header`, `cookie`, or `body`
+data returns HTTP `422`.
 
 The field type is `VextSchemaField`, which supports schema-dsl strings, field-level DslBuilders, nested objects, and object arrays. Field-level DslBuilder is often used to add business descriptions to OpenAPI documents:
 
@@ -417,7 +434,10 @@ external schemas and overrides the inferred contract.
 
 ### Verification failure response
 
-When verification fails, the framework automatically returns `422` status code:
+For `query`, `header`, `cookie`, or `body`, validation failure returns HTTP
+`422` with a structured response such as the following. A `validate.param`
+failure uses the same error shape with HTTP/code `400` because the URL path is
+invalid.
 
 ```json
 {

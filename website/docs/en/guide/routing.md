@@ -467,7 +467,7 @@ app.post(
 );
 ```
 
-Verification sequence: `param` → `query` → `header` → `body`. Failure to verify any location will immediately return a 422 error response.
+Validation runs in this order: `param` → `query` → `header` → `body`. An invalid path `param` returns HTTP `400`; failure at another location returns HTTP `422` immediately.
 
 ### Verification error response
 

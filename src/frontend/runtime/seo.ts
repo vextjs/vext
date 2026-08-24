@@ -7,6 +7,10 @@ import type {
   VextTwitterMetadata,
 } from "../contract/types.js";
 import type { VextRenderHeadOptions } from "../../types/response.js";
+import {
+  normalizeRenderSeoOptions,
+  normalizeRouteSeoOptions,
+} from "../contract/seo-normalization.js";
 
 export interface ResolveSeoHeadInput {
   config: ResolvedVextFrontendSeoConfig;
@@ -28,12 +32,13 @@ export function resolveSeoHead(
     (!input.config.configured && Boolean(input.route || input.render));
   if (!structuredEnabled) return cloneHead(input.head);
 
-  const { metadata: route, originKey: routeOriginKey } = splitRouteSeo(
-    input.route,
-  );
-  const { metadata: render, originKey: renderOriginKey } = splitRenderSeo(
-    input.render,
-  );
+  const normalizedRoute = normalizeRouteSeoOptions(input.route);
+  const normalizedRender = normalizeRenderSeoOptions(input.render);
+
+  const { metadata: route, originKey: routeOriginKey } =
+    splitRouteSeo(normalizedRoute);
+  const { metadata: render, originKey: renderOriginKey } =
+    splitRenderSeo(normalizedRender);
   const metadata = mergeSeoMetadata(
     mergeSeoMetadata(input.config.defaults, route),
     render,

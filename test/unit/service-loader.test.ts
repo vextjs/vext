@@ -31,7 +31,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { loadServices } from "../../src/lib/service-loader.js";
@@ -704,6 +704,11 @@ export default class ReportService {
       expect((app.services as any).analytics.report.path()).toBe(
         "analytics.report",
       );
+      expect(
+        (await readdir(join(servicesDir, "analytics"))).filter((file) =>
+          file.includes(".__vext_compiled__"),
+        ),
+      ).toEqual([]);
     });
 
     it("temp compiled file (.__vext_compiled__) is excluded from scanning", async () => {

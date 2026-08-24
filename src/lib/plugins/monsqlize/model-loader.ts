@@ -40,6 +40,7 @@ import { loadMonSQLizeModelClass } from "./module.js";
  */
 async function getModelClass(): Promise<{
   define: (name: string, definition: any) => void;
+  redefine: (name: string, definition: any) => void;
   has: (name: string) => boolean;
 }> {
   return loadMonSQLizeModelClass();
@@ -75,10 +76,13 @@ export async function loadModels(
   }
 
   let modelCount = 0;
+  let sharedKeys = new Set<string>();
 
   // ── 1. 加载共享 Model 包 ──────────────────────────────────
   if (config.sharedPackage) {
-    modelCount += await loadSharedModels(monsqlize, config.sharedPackage, app);
+    const shared = await loadSharedModels(monsqlize, config.sharedPackage, app);
+    modelCount += shared.count;
+    sharedKeys = shared.keys;
   }
 
   // ── 2. 加载本地 models/ 目录 ──────────────────────────────
@@ -98,7 +102,7 @@ export async function loadModels(
     return;
   }
 
-  modelCount += await loadLocalModels(monsqlize, modelsDir, app);
+  modelCount += await loadLocalModels(monsqlize, modelsDir, app, sharedKeys);
 
   if (modelCount > 0) {
     app.logger.info(`[monsqlize] ${modelCount} model(s) loaded`);
@@ -115,14 +119,15 @@ export async function loadModels(
  * @param monsqlize     MonSQLize 实例
  * @param packageName   共享包名（如 '@project/models'）
  * @param app           插件上下文
- * @returns 加载的 Model 数量
+ * @returns 加载数量及本次共享对象导出拥有的注册键
  */
 async function loadSharedModels(
   monsqlize: MonSQLize,
   packageName: string,
   app: VextPluginContext,
-): Promise<number> {
+): Promise<{ count: number; keys: Set<string> }> {
   let count = 0;
+  const keys = new Set<string>();
 
   try {
     const sharedModels = await import(packageName);
@@ -134,8 +139,9 @@ async function loadSharedModels(
     ) {
       // 格式 1：export default { User: { ... }, Order: { ... } }
       const ModelClass = await getModelClass();
-      for (const [name, definition] of Object.entries(sharedModels.default)) {
-        if (definition && typeof definition === "object") {
+      const definitions = Object.entries(sharedModels.default).flatMap(
+        ([name, definition]) => {
+          if (!definition || typeof definition !== "object") return [];
           const collectionName =
             ((definition as Record<string, unknown>).collection as
               | string
@@ -144,14 +150,23 @@ async function loadSharedModels(
               | string
               | undefined) ??
             name;
-          if (!ModelClass.has(collectionName)) {
-            ModelClass.define(collectionName, definition as any);
-          }
-          count++;
-          app.logger.debug(
-            `[monsqlize] model loaded from shared: ${collectionName}`,
+          return [{ collectionName, definition }];
+        },
+      );
+      for (const { collectionName } of definitions) {
+        if (keys.has(collectionName) || ModelClass.has(collectionName)) {
+          throw new Error(
+            `[monsqlize] shared model key '${collectionName}' is already registered`,
           );
         }
+        keys.add(collectionName);
+      }
+      for (const { collectionName, definition } of definitions) {
+        ModelClass.define(collectionName, definition as any);
+        count++;
+        app.logger.debug(
+          `[monsqlize] model loaded from shared: ${collectionName}`,
+        );
       }
     } else if (
       sharedModels.registerModels &&
@@ -165,7 +180,7 @@ async function loadSharedModels(
     } else {
       app.logger.warn(
         `[monsqlize] shared package "${packageName}" has no valid export ` +
-        "(expected default object or registerModels function)",
+          "(expected default object or registerModels function)",
       );
     }
 
@@ -173,12 +188,72 @@ async function loadSharedModels(
   } catch (err) {
     throw new Error(
       `[monsqlize] Failed to load shared model package "${packageName}":\n` +
-      `  ${(err as Error).message}\n` +
-      `  Make sure the package is installed: npm install ${packageName}`,
+        `  ${(err as Error).message}\n` +
+        `  Make sure the package is installed: npm install ${packageName}`,
     );
   }
 
-  return count;
+  return { count, keys };
+}
+
+interface ModelRegistryClass {
+  define: (name: string, definition: any) => void;
+  redefine: (name: string, definition: any) => void;
+  has: (name: string) => boolean;
+}
+
+export interface LocalModelRegistrationState {
+  sharedKeys: Set<string>;
+  localKeys: Set<string>;
+}
+
+export function registerLocalModelEntry(
+  ModelClass: ModelRegistryClass,
+  entry: { registryKey: string; finalDef: Record<string, unknown> },
+  aliasKey: string | undefined,
+  file: string,
+  state: LocalModelRegistrationState,
+): "defined" | "redefined" {
+  const { registryKey, finalDef } = entry;
+  if (state.localKeys.has(registryKey)) {
+    throw new Error(
+      `[monsqlize] models/${file} — duplicate local model key '${registryKey}'`,
+    );
+  }
+
+  const primaryExists = ModelClass.has(registryKey);
+  if (primaryExists && !state.sharedKeys.has(registryKey)) {
+    throw new Error(
+      `[monsqlize] models/${file} — model key '${registryKey}' is already registered outside the configured shared model object`,
+    );
+  }
+
+  if (
+    aliasKey &&
+    aliasKey !== registryKey &&
+    (state.localKeys.has(aliasKey) ||
+      state.sharedKeys.has(aliasKey) ||
+      ModelClass.has(aliasKey))
+  ) {
+    throw new Error(
+      `[monsqlize] models/${file} — model alias key '${aliasKey}' is already registered`,
+    );
+  }
+
+  const action = primaryExists ? "redefined" : "defined";
+  if (primaryExists) {
+    ModelClass.redefine(registryKey, finalDef as any);
+  } else {
+    ModelClass.define(registryKey, finalDef as any);
+  }
+  state.localKeys.add(registryKey);
+
+  if (aliasKey && aliasKey !== registryKey) {
+    ModelClass.define(aliasKey, finalDef as any);
+    state.localKeys.add(aliasKey);
+  }
+
+  return action;
 }
 
 /**
@@ -196,6 +271,7 @@ async function loadLocalModels(
   monsqlize: MonSQLize,
   modelsDir: string,
   app: VextPluginContext,
+  sharedKeys: Set<string>,
 ): Promise<number> {
   let count = 0;
 
@@ -210,6 +286,11 @@ async function loadLocalModels(
       "**/*.spec.{ts,js,mjs,cjs}",
     ],
   });
+  const ModelClass = await getModelClass();
+  const registrationState: LocalModelRegistrationState = {
+    sharedKeys,
+    localKeys: new Set<string>(),
+  };
 
   // 按字母序排列，确保加载顺序可预测
   for (const file of files.sort()) {
@@ -264,25 +345,20 @@ async function loadLocalModels(
       continue;
     }
     const { registryKey, finalDef } = entry;
-
-    // 使用 Model.define() 静态方法注册（而非 monsqlize.model()）
-    const ModelClass = await getModelClass();
-    if (ModelClass.has(registryKey)) {
-      app.logger.debug(
-        `[monsqlize] model '${registryKey}' already registered, skipping ${file}`,
-      );
-    } else {
-      ModelClass.define(registryKey, finalDef as any);
-      count++;
-      app.logger.debug(
-        `[monsqlize] model loaded: ${registryKey} (from ${file})`,
-      );
-    }
-
-    // R5：若配了 key 且与推断名不同，额外注册别名（双重注册，原推断名保留）
     const aliasKey = def.key as string | undefined;
-    if (aliasKey && aliasKey !== registryKey && !ModelClass.has(aliasKey)) {
-      ModelClass.define(aliasKey, finalDef as any);
+    const action = registerLocalModelEntry(
+      ModelClass,
+      { registryKey, finalDef },
+      aliasKey,
+      file,
+      registrationState,
+    );
+    count++;
+    app.logger.debug(
+      `[monsqlize] model ${action}: ${registryKey} (from ${file})`,
+    );
+
+    if (aliasKey && aliasKey !== registryKey) {
       app.logger.debug(
         `[monsqlize] model alias '${aliasKey}' registered (from ${file})`,
       );
@@ -371,7 +447,11 @@ export function deriveModelName(filePath: string): string {
 export function resolveModelEntry(
   file: string,
   def: Record<string, unknown>,
-): { registryKey: string; finalDef: Record<string, unknown>; depth: number } | null {
+): {
+  registryKey: string;
+  finalDef: Record<string, unknown>;
+  depth: number;
+} | null {
   const withoutExt = file.replace(/\.\w+$/, "");
   const parts = withoutExt.split(/[/\\]/);
   const depth = parts.length - 1;

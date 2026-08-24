@@ -33,7 +33,7 @@ export default defineRoutes((app) => {
 });
 ```
 
-校验通过后，通过 `req.valid(location)` 获取经过类型转换的数据。校验失败时框架自动返回 422 错误响应，无需手动处理。
+校验通过后，通过 `req.valid(location)` 获取类型转换后的数据。`param`（路径参数）非法时自动返回 HTTP `400`；`query`、`header`、`cookie` 或 `body` 非法时自动返回 HTTP `422`，无需 handler 手动处理。
 
 ## 校验位置
 
@@ -256,7 +256,7 @@ app.post(
 
 3. **校验失败时不会到达 handler**
 
-   当校验失败时，框架会在 handler 执行之前自动返回 422 错误响应，因此在 handler 内部调用 `req.valid()` 时数据一定是已通过校验的。
+   handler 执行前，非法路径 `param` 返回 HTTP `400`，非法 `query`、`header`、`cookie` 或 `body` 返回 HTTP `422`；因此 handler 内通过 `req.valid()` 读取的数据已经通过校验。
 
 ```typescript
 // 边界情况示例
@@ -318,7 +318,7 @@ app.post(
 
 ## 校验错误响应
 
-当校验失败时，框架自动返回 422 状态码的结构化错误响应：
+所有校验失败使用同一结构化错误形状：路径 `param` 非法时 HTTP/code 为 `400`，`query`、`header`、`cookie` 或 `body` 非法时 HTTP/code 为 `422`。下面是一个 `422` 示例：
 
 ```json
 {

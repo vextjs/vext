@@ -8,6 +8,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const finalMode = process.argv.includes("--final");
 const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
 const failures = [];
+const packageMajor = /^([1-9]\d*)\./u.exec(String(pkg.version))?.[1];
 
 function assert(condition, message) {
   if (!condition) failures.push(message);
@@ -97,14 +98,13 @@ if (finalMode) {
     `final changelog changelogs/v${pkg.version}.md is missing`,
   );
 
-  const externalEvidencePath = path.join(
-    root,
-    "release",
-    "v1-external-validation.json",
-  );
+  const externalEvidenceFile = packageMajor
+    ? `v${packageMajor}-external-validation.json`
+    : "version-scoped-external-validation.json";
+  const externalEvidencePath = path.join(root, "release", externalEvidenceFile);
   assert(
     existsSync(externalEvidencePath),
-    "release/v1-external-validation.json is missing",
+    `release/${externalEvidenceFile} is missing`,
   );
   if (existsSync(externalEvidencePath)) {
     const evidence = JSON.parse(readFileSync(externalEvidencePath, "utf8"));

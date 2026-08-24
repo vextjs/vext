@@ -167,7 +167,7 @@ function normalizeRoutePattern(value: string): string {
 function materializeRoutePattern(pattern: string): string {
   return pattern
     .replace(/:[A-Za-z_$][\w$]*/gu, "1")
-    .replace(/\*[A-Za-z_$][\w$]*/gu, "1");
+    .replace(/\*(?:[A-Za-z_$][\w$]*)?/gu, "1");
 }
 
 function compileRoutePattern(pattern: string): RegExp {
@@ -178,7 +178,7 @@ function compileRoutePattern(pattern: string): RegExp {
       let end = index + 1;
       while (end < pattern.length && /[\w$]/u.test(pattern[end]!)) end++;
       if (end === index + 1) {
-        source += escapeRegExp(char);
+        source += char === "*" ? ".*" : escapeRegExp(char);
         continue;
       }
       source += char === ":" ? "[^/]+" : ".*";
@@ -187,7 +187,7 @@ function compileRoutePattern(pattern: string): RegExp {
     }
     source += escapeRegExp(char);
   }
-  return new RegExp(`${source}$`, "u");
+  return new RegExp(`${source}$`, "iu");
 }
 
 function escapeRegExp(value: string): string {

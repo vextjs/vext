@@ -18,6 +18,18 @@ describe("main CI and deployment workflow contract", () => {
     expect(ci).toContain("bash scripts/check-version-sync.sh");
   });
 
+  it("requires the coverage job on pull requests as well as main pushes", () => {
+    const ci = workflow("ci.yml");
+    const coverageJob = ci.match(
+      /^  coverage:\s*$([\s\S]*?)(?=^  [a-z][a-z-]+:\s*$)/mu,
+    )?.[1];
+
+    expect(coverageJob).toBeDefined();
+    expect(coverageJob).not.toMatch(/if:\s*github\.event_name == 'push'/u);
+    expect(ci).toMatch(/needs:[\s\S]*coverage,[\s\S]*docs-build,/u);
+    expect(ci).toContain("${{ needs.coverage.result }}");
+  });
+
   it("keeps exact public-version validation in the tag release", () => {
     expect(workflow("release.yml")).toContain(
       "bash scripts/check-version-sync.sh --release",

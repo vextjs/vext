@@ -32,6 +32,7 @@ export async function typegenCommand(args: string[] = []): Promise<void> {
     rootDir: project.rootDir,
     generateServices,
     generateAppExtensions,
+    generateShim: project.language === "ts",
     checkOnly: options.checkOnly,
     writeManifest: options.writeManifest,
   });
@@ -131,7 +132,7 @@ function printTypegenHelp(): void {
   Generated files:
     .vext/types/services.generated.d.ts
     .vext/types/app-extensions.generated.d.ts
-    src/types/generated/index.d.ts
+    src/types/generated/index.d.ts  (TypeScript projects only)
     .vext/manifest/services.json  (optional)
 
   Examples:

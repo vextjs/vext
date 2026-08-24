@@ -6,8 +6,9 @@ const mocks = vi.hoisted(() => {
     order,
     existsSync: vi.fn(() => false),
     rmSync: vi.fn(),
-    execSync: vi.fn(() => {
+    runLocalTsc: vi.fn(async () => {
       order.push("typecheck");
+      return { exitCode: 0, output: "" };
     }),
     detectProject: vi.fn(() => ({
       rootDir: "E:/app",
@@ -85,10 +86,6 @@ vi.mock("node:fs", () => ({
   rmSync: mocks.rmSync,
 }));
 
-vi.mock("node:child_process", () => ({
-  execSync: mocks.execSync,
-}));
-
 vi.mock("../../../src/cli/utils/detect-project.js", () => ({
   detectProject: mocks.detectProject,
 }));
@@ -99,6 +96,10 @@ vi.mock("../../../src/tooling/typegen/index.js", () => ({
 
 vi.mock("../../../src/tooling/doctor/index.js", () => ({
   runDoctor: mocks.runDoctor,
+}));
+
+vi.mock("../../../src/cli/utils/local-tsc.js", () => ({
+  runLocalTsc: mocks.runLocalTsc,
 }));
 
 vi.mock("../../../src/lib/build/build-compiler.js", () => ({
@@ -158,8 +159,8 @@ describe("buildCommand", () => {
       writeManifest: true,
       refresh: true,
     });
-    expect(mocks.execSync).toHaveBeenCalledWith("npx tsc --noEmit", {
-      cwd: "E:/app",
+    expect(mocks.runLocalTsc).toHaveBeenCalledWith("E:/app", {
+      pretty: false,
       stdio: "inherit",
     });
     expect(mocks.loadConfig).toHaveBeenCalledWith(

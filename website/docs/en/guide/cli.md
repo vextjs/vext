@@ -128,7 +128,11 @@ The tree above is the default **TypeScript full-stack** starter. Its `src/types/
 | `src/types/shared/**`    | Your application | Serializable data contracts shared by server code and the UI, such as `GreetingDto`.                                                                                                 |
 | `src/types/frontend/**`  | Your application | Page and render contracts consumed by the route that renders a page and by `src/frontend/**`, such as `HomePageProps`. Keep server-only implementation details out of this boundary. |
 
-`vext typegen` writes only `src/types/generated/**`; it does not replace application-owned files in `shared/**` or `frontend/**`.
+In TypeScript projects, `vext typegen` writes only
+`src/types/generated/**`; it does not replace application-owned files in
+`shared/**` or `frontend/**`. JavaScript create/dev/typegen flows do not create
+that public TypeScript tree; their tooling declarations remain under
+`.vext/types`.
 
 | Starter                                                | Initial `src/types/**` layout                  |
 | ------------------------------------------------------ | ---------------------------------------------- |
@@ -288,6 +292,11 @@ vext build [options]
 | `--deploy-dry-run` | Print the frontend upload plan without writing assets                 | `false`      |
 | `-h, --help`       | Show help                                                             | —            |
 
+The CLI flag remains opt-in for an existing project. New TypeScript starters
+set their generated `package.json` build script to `vext build --typecheck`, so
+`npm run build` includes semantic checking by default. JavaScript starters use
+`vext build` without invoking TypeScript.
+
 Production CLI builds minify backend output by default. Use `--no-minify` for readable local output, or set `VEXT_BUILD_MINIFY=false` when the opt-out is controlled by the environment. Frontend production minification still follows `frontend.build.minify`.
 
 ### Example
@@ -320,8 +329,8 @@ vext build && vext start
 
 ### Build behavior
 
-- Refresh `.vext/types/*.generated.d.ts`, `src/types/generated/index.d.ts`, `.vext/manifest/services.json` and `.vext/manifest/routes.json` first
-- When `--typecheck` is enabled, execute `tsc --noEmit` after refreshing the generated / manifest
+- Refresh `.vext/types/*.generated.d.ts`, `.vext/manifest/services.json`, and `.vext/manifest/routes.json` first; TypeScript projects also refresh `src/types/generated/index.d.ts`
+- When `--typecheck` is enabled, execute the project-local `tsc --noEmit` after refreshing generated products; missing local TypeScript fails with an actionable error and never falls back to network resolution
 - Use esbuild for server compilation and frontend bundling
 - Positional arguments are not supported; value options such as `--outdir` and `--config` require a non-option value
 - The output directory defaults to `dist/`
@@ -420,11 +429,16 @@ vext typegen [options]
 ```text
 .vext/types/services.generated.d.ts
 .vext/types/app-extensions.generated.d.ts
-src/types/generated/index.d.ts # Vext-managed output; do not hand-edit
+src/types/generated/index.d.ts # TypeScript projects only; Vext-managed
 .vext/manifest/services.json
 ```
 
-`src/types/generated/**` is the only `src/types/**` location written by `vext typegen`. The full-stack starter's `shared/**` and `frontend/**` folders are application-owned contracts; see [Generated directory structure](#generated-directory-structure) for their roles and template-specific availability.
+For TypeScript projects, `src/types/generated/**` is the only `src/types/**`
+location written by `vext typegen`. JavaScript projects keep the hidden
+`.vext/types` products but receive no public `.d.ts` shim. The full-stack
+starter's `shared/**` and `frontend/**` folders are application-owned
+contracts; see [Generated directory structure](#generated-directory-structure)
+for their roles and template-specific availability.
 
 ### Example
 

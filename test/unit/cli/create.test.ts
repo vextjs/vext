@@ -487,7 +487,7 @@ describe("vext create", () => {
         const files = getWrittenFiles();
         const pkg = JSON.parse(files["package.json"]);
 
-        expect(pkg.scripts.build).toBe("vext build");
+        expect(pkg.scripts.build).toBe("vext build --typecheck");
       });
 
       it("dependencies 包含 vextjs", async () => {

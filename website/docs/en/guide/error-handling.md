@@ -80,7 +80,7 @@ In production environments, it is recommended to keep `response.hideInternalErro
 
 ## Verification error
 
-When a route `validate` fails, the framework returns `422` and field-level error details. Custom field-level errors can throw `VextValidationError`:
+When route `validate` fails, invalid path parameters return HTTP `400`; query, header, cookie, and body failures return HTTP `422`. Both include field-level error details. Custom field-level errors can throw `VextValidationError`:
 
 ```ts
 import { VextValidationError } from "vextjs";

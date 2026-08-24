@@ -1724,6 +1724,81 @@ describe("loadModels", () => {
     expect(localModelDefine).toHaveBeenCalledWith("orders", expect.any(Object));
   });
 
+  it("fails fast when a shared default model collides with an existing key", async () => {
+    vi.resetModules();
+
+    vi.doMock("node:fs", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("node:fs")>();
+      return { ...actual, existsSync: vi.fn().mockReturnValue(false) };
+    });
+    vi.doMock("monsqlize", () => ({
+      default: Object.assign(vi.fn(), {
+        Model: {
+          define: vi.fn(),
+          redefine: vi.fn(),
+          has: vi.fn().mockReturnValue(true),
+        },
+      }),
+    }));
+    vi.doMock("@project/colliding-models", () => ({
+      default: { User: { collection: "users", schema: {} } },
+    }));
+
+    const mod =
+      await import("../../../../src/lib/plugins/monsqlize/model-loader.js");
+    const monsqlize = createMockMonsqlize() as any;
+    const { app } = createMockApp();
+
+    await expect(
+      mod.loadModels(
+        monsqlize,
+        { sharedPackage: "@project/colliding-models" },
+        app,
+        "/tmp/src",
+      ),
+    ).rejects.toThrow("shared model key 'users' is already registered");
+  });
+
+  it("preflights every shared default key before registering any model", async () => {
+    vi.resetModules();
+
+    const localModelDefine = vi.fn();
+    vi.doMock("node:fs", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("node:fs")>();
+      return { ...actual, existsSync: vi.fn().mockReturnValue(false) };
+    });
+    vi.doMock("monsqlize", () => ({
+      default: Object.assign(vi.fn(), {
+        Model: {
+          define: localModelDefine,
+          redefine: vi.fn(),
+          has: vi.fn((name: string) => name === "orders"),
+        },
+      }),
+    }));
+    vi.doMock("@project/partially-colliding-models", () => ({
+      default: {
+        User: { collection: "users", schema: {} },
+        Order: { collection: "orders", schema: {} },
+      },
+    }));
+
+    const mod =
+      await import("../../../../src/lib/plugins/monsqlize/model-loader.js");
+    const monsqlize = createMockMonsqlize() as any;
+    const { app } = createMockApp();
+
+    await expect(
+      mod.loadModels(
+        monsqlize,
+        { sharedPackage: "@project/partially-colliding-models" },
+        app,
+        "/tmp/src",
+      ),
+    ).rejects.toThrow("shared model key 'orders' is already registered");
+    expect(localModelDefine).not.toHaveBeenCalled();
+  });
+
   it("loads shared models via registerModels function", async () => {
     vi.resetModules();
 
@@ -1997,6 +2072,83 @@ describe("loadModels", () => {
         typeof call[0] === "string" && call[0].includes("no models/ directory"),
     );
     expect(hasNoModelsLog).toBe(false);
+  });
+});
+
+describe("registerLocalModelEntry", () => {
+  function createRegistry(initialKeys: string[] = []) {
+    const keys = new Set(initialKeys);
+    return {
+      keys,
+      ModelClass: {
+        has: vi.fn((key: string) => keys.has(key)),
+        define: vi.fn((key: string) => keys.add(key)),
+        redefine: vi.fn(),
+      },
+    };
+  }
+
+  it("lets one local primary key explicitly override its shared definition", async () => {
+    const { registerLocalModelEntry } =
+      await import("../../../../src/lib/plugins/monsqlize/model-loader.js");
+    const { ModelClass } = createRegistry(["users"]);
+    const state = {
+      sharedKeys: new Set(["users"]),
+      localKeys: new Set<string>(),
+    };
+
+    registerLocalModelEntry(
+      ModelClass,
+      { registryKey: "users", finalDef: { schema: {} } },
+      undefined,
+      "user.ts",
+      state,
+    );
+
+    expect(ModelClass.redefine).toHaveBeenCalledWith("users", { schema: {} });
+    expect(ModelClass.define).not.toHaveBeenCalled();
+  });
+
+  it("rejects duplicate local primary keys instead of silently skipping", async () => {
+    const { registerLocalModelEntry } =
+      await import("../../../../src/lib/plugins/monsqlize/model-loader.js");
+    const { ModelClass } = createRegistry(["users"]);
+    const state = {
+      sharedKeys: new Set<string>(),
+      localKeys: new Set(["users"]),
+    };
+
+    expect(() =>
+      registerLocalModelEntry(
+        ModelClass,
+        { registryKey: "users", finalDef: { schema: {} } },
+        undefined,
+        "duplicate.ts",
+        state,
+      ),
+    ).toThrow("duplicate local model key 'users'");
+  });
+
+  it("rejects an alias collision before mutating the primary registry", async () => {
+    const { registerLocalModelEntry } =
+      await import("../../../../src/lib/plugins/monsqlize/model-loader.js");
+    const { ModelClass } = createRegistry(["accounts"]);
+    const state = {
+      sharedKeys: new Set<string>(),
+      localKeys: new Set<string>(),
+    };
+
+    expect(() =>
+      registerLocalModelEntry(
+        ModelClass,
+        { registryKey: "users", finalDef: { schema: {} } },
+        "accounts",
+        "user.ts",
+        state,
+      ),
+    ).toThrow("model alias key 'accounts' is already registered");
+    expect(ModelClass.define).not.toHaveBeenCalled();
+    expect(ModelClass.redefine).not.toHaveBeenCalled();
   });
 });
 

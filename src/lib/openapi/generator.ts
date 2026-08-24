@@ -177,7 +177,7 @@ export class OpenAPIGenerator {
       type: "object",
       properties: {
         code: {
-          type: "integer",
+          oneOf: [{ type: "integer" }, { type: "string" }],
           description: "HTTP status code or business error code",
         },
         message: {
@@ -189,9 +189,24 @@ export class OpenAPIGenerator {
           description: "Request trace ID",
         },
         details: {
-          type: "object",
+          oneOf: [
+            { type: "object", additionalProperties: true },
+            { type: "array", items: {} },
+          ],
           description: "Optional JSON-safe business error details",
-          additionalProperties: true,
+        },
+        errors: {
+          type: "array",
+          description: "Optional request validation field errors",
+          items: {
+            type: "object",
+            properties: {
+              field: { type: "string" },
+              message: { type: "string" },
+            },
+            required: ["field", "message"],
+            additionalProperties: false,
+          },
         },
       },
       required: ["code", "message", "requestId"],

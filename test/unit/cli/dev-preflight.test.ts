@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { join } from "node:path";
 
 const mocks = vi.hoisted(() => {
   const existsSync = vi.fn();
@@ -130,6 +131,12 @@ describe("runDevPreflight", () => {
       typegenOk: false,
       tsOk: true,
     });
+    expect(mocks.runTypegen).toHaveBeenCalledWith({
+      rootDir: "E:\\app",
+      generateServices: true,
+      generateAppExtensions: true,
+      generateShim: false,
+    });
     expect(mocks.spawn).not.toHaveBeenCalled();
     expect(consoleLogSpy).toHaveBeenCalledWith(
       "[vext dev] generated .vext/types/services.generated.d.ts",
@@ -224,11 +231,47 @@ describe("runDevPreflight", () => {
       tsOk: false,
     });
     expect(mocks.spawn).toHaveBeenCalledTimes(1);
+    expect(mocks.spawn).toHaveBeenCalledWith(
+      process.execPath,
+      [
+        join("E:\\app", "node_modules", "typescript", "bin", "tsc"),
+        "--noEmit",
+        "--pretty",
+        "true",
+      ],
+      {
+        cwd: "E:\\app",
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+      },
+    );
     expect(consoleErrorSpy).toHaveBeenCalledWith(
       "[vext dev] TypeScript reported 1 blocking error(s) during soft reload.",
     );
     expect(consoleErrorSpy).toHaveBeenCalledWith(
       "src/index.ts(1,1): error TS2322: Type 'string' is not assignable to type 'number'.",
+    );
+  });
+
+  it("fails clearly without using a network fallback when local tsc is missing", async () => {
+    mocks.existsSync.mockImplementation((filePath: unknown) =>
+      String(filePath).endsWith("tsconfig.json"),
+    );
+
+    const result = await runDevPreflight({
+      rootDir: "E:\\app",
+      language: "ts",
+      reason: "initial start",
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      typegenOk: true,
+      tsOk: false,
+    });
+    expect(mocks.spawn).not.toHaveBeenCalled();
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Local TypeScript compiler not found"),
     );
   });
 

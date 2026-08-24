@@ -175,14 +175,17 @@ export async function buildCommand(args: string[] = []): Promise<void> {
   if (options.typecheck) {
     console.log("[vextjs] running type check...");
 
-    try {
-      const { execSync } = await import("node:child_process");
-      execSync("npx tsc --noEmit", {
-        cwd: project.rootDir,
-        stdio: "inherit",
-      });
+    const { runLocalTsc } = await import("./utils/local-tsc.js");
+    const typecheckResult = await runLocalTsc(project.rootDir, {
+      pretty: false,
+      stdio: "inherit",
+    });
+    if (typecheckResult.exitCode === 0) {
       console.log("[vextjs] type check passed ✓");
-    } catch {
+    } else {
+      if (typecheckResult.output) {
+        console.error(typecheckResult.output);
+      }
       console.error("[vextjs] type check failed - build aborted");
       process.exit(1);
     }
@@ -500,7 +503,7 @@ function printBuildHelp(): void {
     --no-sourcemap     Disable source map generation
     --minify           Minify output code (default: true)
     --no-minify        Disable output minification
-    --typecheck        Run TypeScript type check after generated artifacts refresh
+    --typecheck        Run the project-local TypeScript compiler after generated artifacts refresh
     --upload-assets    Upload frontend static assets after build
     --deploy-dry-run   Print frontend upload plan without writing assets
     -h, --help         Show this help message

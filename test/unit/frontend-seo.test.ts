@@ -20,6 +20,7 @@ import {
 } from "../../src/frontend/runtime/seo-endpoints.js";
 import { getFrontendContentType } from "../../src/frontend/deploy/content-type.js";
 import { RouteMetadataCollector } from "../../src/lib/openapi/collector.js";
+import { createRouteFreshnessIdentity } from "../../src/frontend/contract/schema-ir.js";
 
 const tempDirs: string[] = [];
 
@@ -188,6 +189,174 @@ describe("frontend SEO head", () => {
         route: { originKey: "missing" },
       }),
     ).toThrow(/originKey "missing" is not declared/u);
+  });
+
+  it("deeply normalizes SEO metadata and rejects incomplete or unsafe values", async () => {
+    const rootDir = await tempRoot();
+    const normalized = resolveFrontendConfig(
+      {
+        enabled: true,
+        seo: {
+          publicOrigin: "https://www.example.test",
+          defaults: {
+            title: "  Default title  ",
+            robots: [" index ", " follow "],
+            alternates: [{ hrefLang: " en ", href: "/en" }],
+            openGraph: {
+              images: [
+                {
+                  url: "/cover.png",
+                  alt: " Cover ",
+                  width: 1200,
+                  height: 630,
+                },
+              ],
+            },
+          },
+        },
+      },
+      { rootDir, mode: "production" },
+    );
+
+    expect(normalized.seo.defaults).toMatchObject({
+      title: "Default title",
+      robots: ["index", "follow"],
+      alternates: [{ hrefLang: "en", href: "/en" }],
+      openGraph: {
+        images: [
+          {
+            url: "/cover.png",
+            alt: "Cover",
+            width: 1200,
+            height: 630,
+          },
+        ],
+      },
+    });
+
+    expect(() =>
+      resolveFrontendConfig(
+        {
+          enabled: true,
+          seo: {
+            defaults: {
+              alternates: [{ hrefLang: "en" } as any],
+            },
+          },
+        },
+        { rootDir, mode: "production" },
+      ),
+    ).toThrow(/defaults\.alternates\[0\]\.href must be a non-empty string/u);
+    expect(() =>
+      createRouteFreshnessIdentity({
+        frontend: {
+          seo: { alternates: [{ href: "/en" } as any] },
+        },
+      }),
+    ).toThrow(/alternates\[0\]\.hrefLang must be a non-empty string/u);
+    expect(() =>
+      resolveFrontendConfig(
+        {
+          enabled: true,
+          seo: {
+            defaults: { openGraph: { images: [{} as any] } },
+          },
+        },
+        { rootDir, mode: "production" },
+      ),
+    ).toThrow(/openGraph\.images\[0\]\.url must be a non-empty string/u);
+    expect(() =>
+      resolveFrontendConfig(
+        {
+          enabled: true,
+          seo: { defaults: { twitter: { images: [""] } } },
+        },
+        { rootDir, mode: "production" },
+      ),
+    ).toThrow(/twitter\.images\[0\] must be a non-empty string/u);
+    expect(() =>
+      resolveFrontendConfig(
+        {
+          enabled: true,
+          seo: { defaults: { robots: "index\nX-Injected: true" } },
+        },
+        { rootDir, mode: "production" },
+      ),
+    ).toThrow(/must not contain control characters/u);
+    expect(() =>
+      resolveFrontendConfig(
+        {
+          enabled: true,
+          seo: { defaults: { robots: "index\u0081noindex" } },
+        },
+        { rootDir, mode: "production" },
+      ),
+    ).toThrow(/must not contain control characters/u);
+    expect(() =>
+      resolveFrontendConfig(
+        {
+          enabled: true,
+          seo: {
+            publicOrigin: "https://www.example.test",
+            robots: {
+              groups: [{ userAgent: "*\nDisallow: /private" }],
+            },
+          },
+        },
+        { rootDir, mode: "production" },
+      ),
+    ).toThrow(/must not contain control characters/u);
+
+    expect(() =>
+      resolveSeoHead({
+        config: normalized.seo,
+        pathname: "/",
+        render: { alternates: [{ hrefLang: "en" } as any] },
+      }),
+    ).toThrow(/res\.render\(\.\.\.\)\.seo\.alternates\[0\]\.href/u);
+
+    expect(() =>
+      resolveSeoHead({
+        config: normalized.seo,
+        pathname: "/",
+        render: { jsonLd: new Date() as any },
+      }),
+    ).toThrow(/jsonLd must contain JSON-safe values/u);
+
+    const cyclicJsonLd: Record<string, unknown> = {};
+    cyclicJsonLd.self = cyclicJsonLd;
+    expect(() =>
+      resolveSeoHead({
+        config: normalized.seo,
+        pathname: "/",
+        render: { jsonLd: cyclicJsonLd as any },
+      }),
+    ).toThrow(/jsonLd\.self must contain JSON-safe values/u);
+
+    expect(() =>
+      resolveSeoHead({
+        config: normalized.seo,
+        pathname: "/",
+        render: { jsonLd: new Array(1) as any },
+      }),
+    ).toThrow(/jsonLd must contain JSON-safe values/u);
+  });
+
+  it("rejects origin declarations that share a request host", async () => {
+    const rootDir = await tempRoot();
+
+    expect(() =>
+      resolveFrontendConfig(
+        {
+          enabled: true,
+          seo: {
+            publicOrigin: "https://www.example.test/base",
+            origins: { shop: "https://www.example.test/shop" },
+          },
+        },
+        { rootDir, mode: "production" },
+      ),
+    ).toThrow(/share request host "www\.example\.test"/u);
   });
 });
 
@@ -560,6 +729,8 @@ describe("frontend runtime SEO endpoints", () => {
       "/sitemap-1.xml",
       "/:document",
       "/*document",
+      "/*",
+      "/SITEMAP.XML",
     ]) {
       expect(() =>
         assertNoFrontendSeoRouteConflicts(config, [

@@ -11,12 +11,12 @@ import type {
 } from "../../types/app.js";
 import type {
   VextRouteFreshnessIdentity,
-  VextRouteFrontendSeoOptions,
   VextRouteLayoutIdentity,
   VextRouteResponseSchemaV1,
   VextRouteSchemaContractV1,
   VextSchemaIRV1,
 } from "./types.js";
+import { normalizeRouteSeoOptions } from "./seo-normalization.js";
 
 const schemaConverter = new SchemaConverter();
 
@@ -187,160 +187,6 @@ export function createRouteFreshnessIdentity(
       : {}),
     ...(staticBudget ? { staticBudget } : {}),
   };
-}
-
-function normalizeRouteSeoOptions(
-  value: unknown,
-): VextRouteFrontendSeoOptions | undefined {
-  if (value === undefined) return undefined;
-  if (!isRecord(value)) {
-    throw new Error("[vextjs] RouteOptions.frontend.seo must be an object.");
-  }
-
-  const title = optionalNonEmptyString(value.title, "seo.title");
-  const description = optionalNonEmptyString(
-    value.description,
-    "seo.description",
-  );
-  const canonical = optionalPathname(value.canonical, "seo.canonical");
-  const originKey = optionalNonEmptyString(value.originKey, "seo.originKey");
-  const robots = normalizeRobotsDirective(value.robots);
-  const openGraph = normalizeJsonRecord(value.openGraph, "seo.openGraph");
-  const twitter = normalizeJsonRecord(value.twitter, "seo.twitter");
-  const alternates = normalizeAlternates(value.alternates);
-  const jsonLd = normalizeJsonValue(value.jsonLd, "seo.jsonLd");
-  if (value.index !== undefined && typeof value.index !== "boolean") {
-    throw new Error(
-      "[vextjs] RouteOptions.frontend.seo.index must be a boolean.",
-    );
-  }
-
-  return {
-    ...(title ? { title } : {}),
-    ...(description ? { description } : {}),
-    ...(robots ? { robots } : {}),
-    ...(canonical ? { canonical } : {}),
-    ...(openGraph ? { openGraph } : {}),
-    ...(twitter ? { twitter } : {}),
-    ...(alternates ? { alternates } : {}),
-    ...(jsonLd !== undefined ? { jsonLd } : {}),
-    ...(originKey ? { originKey } : {}),
-    ...(value.index !== undefined ? { index: value.index } : {}),
-  } as VextRouteFrontendSeoOptions;
-}
-
-function optionalNonEmptyString(
-  value: unknown,
-  label: string,
-): string | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== "string" || !value.trim()) {
-    throw new Error(
-      `[vextjs] RouteOptions.frontend.${label} must be a non-empty string.`,
-    );
-  }
-  return value.trim();
-}
-
-function optionalPathname(value: unknown, label: string): string | undefined {
-  const pathname = optionalNonEmptyString(value, label);
-  if (pathname === undefined) return undefined;
-  if (
-    !pathname.startsWith("/") ||
-    pathname.startsWith("//") ||
-    pathname.includes("?") ||
-    pathname.includes("#")
-  ) {
-    throw new Error(
-      `[vextjs] RouteOptions.frontend.${label} must be an absolute pathname without query or hash.`,
-    );
-  }
-  try {
-    decodeURI(pathname);
-  } catch {
-    throw new Error(
-      `[vextjs] RouteOptions.frontend.${label} contains invalid URL encoding.`,
-    );
-  }
-  return pathname;
-}
-
-function normalizeRobotsDirective(
-  value: unknown,
-): string | readonly string[] | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value === "string" && value.trim()) return value.trim();
-  if (
-    Array.isArray(value) &&
-    value.length > 0 &&
-    value.every((entry) => typeof entry === "string" && entry.trim())
-  ) {
-    return value.map((entry) => entry.trim());
-  }
-  throw new Error(
-    "[vextjs] RouteOptions.frontend.seo.robots must be a non-empty string or string array.",
-  );
-}
-
-function normalizeJsonRecord(
-  value: unknown,
-  label: string,
-): Record<string, unknown> | undefined {
-  if (value === undefined) return undefined;
-  if (!isRecord(value) || !isJsonSafe(value)) {
-    throw new Error(
-      `[vextjs] RouteOptions.frontend.${label} must be a JSON-safe object.`,
-    );
-  }
-  return value;
-}
-
-function normalizeAlternates(
-  value: unknown,
-): Array<{ hrefLang: string; href: string }> | undefined {
-  if (value === undefined) return undefined;
-  if (!Array.isArray(value)) {
-    throw new Error(
-      "[vextjs] RouteOptions.frontend.seo.alternates must be an array.",
-    );
-  }
-  return value.map((entry, index) => {
-    if (!isRecord(entry)) {
-      throw new Error(
-        `[vextjs] RouteOptions.frontend.seo.alternates[${index}] must be an object.`,
-      );
-    }
-    const hrefLang = optionalNonEmptyString(
-      entry.hrefLang,
-      `seo.alternates[${index}].hrefLang`,
-    );
-    const href = optionalPathname(entry.href, `seo.alternates[${index}].href`);
-    return { hrefLang: hrefLang!, href: href! };
-  });
-}
-
-function normalizeJsonValue(value: unknown, label: string): unknown {
-  if (value === undefined) return undefined;
-  if (!isJsonSafe(value)) {
-    throw new Error(
-      `[vextjs] RouteOptions.frontend.${label} must contain only JSON-safe values.`,
-    );
-  }
-  return value;
-}
-
-function isJsonSafe(value: unknown): boolean {
-  if (
-    value === null ||
-    typeof value === "string" ||
-    typeof value === "boolean"
-  ) {
-    return true;
-  }
-  if (typeof value === "number") return Number.isFinite(value);
-  if (Array.isArray(value)) return value.every(isJsonSafe);
-  if (isRecord(value)) return Object.values(value).every(isJsonSafe);
-  return false;
 }
 
 export function createUnresolvedLayoutIdentity(): VextRouteLayoutIdentity {

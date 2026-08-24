@@ -128,7 +128,7 @@ my-app/
 | `src/types/shared/**`    | 应用代码    | 服务端与 UI 共用、可序列化的数据契约，例如 `GreetingDto`。                                                                |
 | `src/types/frontend/**`  | 应用代码    | 由渲染页面的 route 与 `src/frontend/**` 共同使用的页面/渲染契约，例如 `HomePageProps`；不要把服务端私有实现细节放进这里。 |
 
-`vext typegen` 只会写入 `src/types/generated/**`，不会覆盖应用维护的 `shared/**` 或 `frontend/**` 文件。
+在 TypeScript 项目中，`vext typegen` 只会写入 `src/types/generated/**`，不会覆盖应用维护的 `shared/**` 或 `frontend/**` 文件。JavaScript 的 create/dev/typegen 流程不会创建这棵公开 TypeScript 目录；工具声明只保留在 `.vext/types`。
 
 | 脚手架模式                                              | 初始 `src/types/**` 结构                     |
 | ------------------------------------------------------- | -------------------------------------------- |
@@ -288,6 +288,8 @@ vext build [options]
 | `--deploy-dry-run` | 只输出前端上传计划，不写入目标                  | `false`      |
 | `-h, --help`       | 显示帮助                                        | —            |
 
+对已有项目而言，CLI flag 仍是 opt-in。新 TypeScript starter 生成的 `package.json` 会把 build script 设为 `vext build --typecheck`，因此 `npm run build` 默认包含语义类型检查；JavaScript starter 使用不调用 TypeScript 的 `vext build`。
+
 生产 CLI 构建默认压缩后端输出。需要可读的本地输出时使用 `--no-minify`；若由环境控制该退出开关，可设置 `VEXT_BUILD_MINIFY=false`。前端生产压缩仍遵循 `frontend.build.minify`。
 
 ### 示例
@@ -320,8 +322,8 @@ vext build && vext start
 
 ### 构建行为
 
-- 先刷新 `.vext/types/*.generated.d.ts`、`src/types/generated/index.d.ts`、`.vext/manifest/services.json` 与 `.vext/manifest/routes.json`
-- `--typecheck` 开启时，在 generated / manifest 刷新后执行 `tsc --noEmit`
+- 先刷新 `.vext/types/*.generated.d.ts`、`.vext/manifest/services.json` 与 `.vext/manifest/routes.json`；TypeScript 项目还会刷新 `src/types/generated/index.d.ts`
+- `--typecheck` 开启时，在 generated 产物刷新后只执行项目本地的 `tsc --noEmit`；缺少本地 TypeScript 时给出可操作错误，不回退到网络解析
 - 使用 esbuild 进行服务端编译与前端打包
 - 不支持位置参数；`--outdir`、`--config` 等取值参数必须提供非 option 值
 - 输出目录默认为 `dist/`
@@ -420,11 +422,11 @@ vext typegen [options]
 ```text
 .vext/types/services.generated.d.ts
 .vext/types/app-extensions.generated.d.ts
-src/types/generated/index.d.ts # Vext 管理的输出；不要手动修改
+src/types/generated/index.d.ts # 仅 TypeScript 项目；Vext 管理
 .vext/manifest/services.json
 ```
 
-`src/types/generated/**` 是 `vext typegen` 在 `src/types/**` 内唯一会写入的位置。全栈 starter 的 `shared/**` 与 `frontend/**` 是应用维护的契约目录；它们的职责与各模板的生成条件见[生成的目录结构](#生成的目录结构)。
+对 TypeScript 项目，`src/types/generated/**` 是 `vext typegen` 在 `src/types/**` 内唯一会写入的位置。JavaScript 项目仍保留隐藏的 `.vext/types` 产物，但不会收到公开 `.d.ts` shim。全栈 starter 的 `shared/**` 与 `frontend/**` 是应用维护的契约目录；它们的职责与各模板的生成条件见[生成的目录结构](#生成的目录结构)。
 
 ### 示例
 

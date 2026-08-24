@@ -103,15 +103,22 @@ The public API currently has no global `hydration: "none"` setting. One applicat
 
 If an entire site needs pure SSR, declare `hydration: "none"` on each route, or generate those route options consistently in your application's own route-registration layer. The latter is an application-level wrapper, not a Vext global configuration API.
 
-## Why route options must be an `inline object literal`
+## Static route-options grammar
 
-Vext reads each route's hydration policy at build time and uses it to generate the route manifest and resource inventory. For that reason, the route-options argument and `RouteOptions.frontend` in a three-argument route must be written directly in the route declaration:
+Vext reads each route's hydration policy at build time and uses it to generate
+the route manifest and resource inventory. An inline declaration is the
+simplest supported form:
 
 ```ts
 app.get("/article/:slug", { frontend: { hydration: "none" } }, handler);
 ```
 
-The build index does not execute imported variables or helper return values, so extracting shared route options prevents the build-time manifest from reliably reading the policy. Keep request-dependent page metadata in `res.render(..., { seo })`.
+The finite static grammar also accepts same-file `const` objects, TypeScript
+static wrappers, and a helper call whose first argument is a projectable
+options object. The helper body, imported values, computed expressions, and
+interpolated templates are not executed. An unprojectable path or indexed
+schema fails with route context rather than being silently omitted. Keep
+request-dependent page metadata in `res.render(..., { seo })`.
 
 ## Avoid Mismatch
 

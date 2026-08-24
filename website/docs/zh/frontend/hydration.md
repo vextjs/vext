@@ -103,15 +103,15 @@ app.get(
 
 如果整个站点都需要纯 SSR，请逐个路由声明 `hydration: "none"`，或在应用自己的路由注册层统一生成这些路由配置。后者是应用层封装，不等于 Vext 提供了全局配置 API。
 
-## 为什么 route options 必须写成 `inline object literal`
+## Route options 的静态语法
 
-Vext 会在构建阶段读取每个路由的 hydration policy，并据此生成 route manifest 和资源清单。因此三参数路由的 route-options 参数及 `RouteOptions.frontend` 必须直接写在路由声明中：
+Vext 会在构建阶段读取每个路由的 hydration policy，并据此生成 route manifest 和资源清单。直接内联声明是最简单的受支持形式：
 
 ```ts
 app.get("/article/:slug", { frontend: { hydration: "none" } }, handler);
 ```
 
-构建索引不会执行导入变量或 helper 的返回值，提取为公共 route options 变量会让构建期 manifest 无法可靠读取该策略。依赖请求数据的动态页面元数据继续放在 `res.render(..., { seo })`。
+有限静态语法也接受同文件 `const` 对象、TypeScript 静态包装，以及第一参数可投影的 helper 调用。索引不会执行 helper 函数体、导入值、计算表达式或带插值的模板字符串；无法投影的 path 或被索引 schema 会携带 route 上下文失败，而不是静默遗漏。依赖请求数据的动态页面元数据继续放在 `res.render(..., { seo })`。
 
 ## 避免 Mismatch
 

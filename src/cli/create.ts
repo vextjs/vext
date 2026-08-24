@@ -606,7 +606,11 @@ function generatePackageJson(
     type: "module",
     scripts: {
       dev: "vext dev",
-      build: isTs || isFullstack ? "vext build" : undefined,
+      build: isTs
+        ? "vext build --typecheck"
+        : isFullstack
+          ? "vext build"
+          : undefined,
       start: "vext start",
     },
     dependencies: sortObj(deps),

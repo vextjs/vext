@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
-import { spawn } from "node:child_process";
 import { join, relative, win32 } from "node:path";
 
 import { runTypegen } from "../../tooling/typegen/index.js";
+import { runLocalTsc } from "./local-tsc.js";
 
 export type TsDiagnosticsMode = "blocking" | "async" | "skip";
 
@@ -43,6 +43,7 @@ export async function runDevPreflight(
     rootDir,
     generateServices: true,
     generateAppExtensions: true,
+    generateShim: language === "ts",
   });
 
   logTypegenResult(rootDir, typegenResult, { logDetails: logTypegenDetails });
@@ -170,49 +171,6 @@ async function runTypeScriptDiagnostics(
     errorCount: countTypeScriptErrors(formatted),
     formatted,
   };
-}
-
-function runLocalTsc(
-  rootDir: string,
-): Promise<{ exitCode: number | null; output: string }> {
-  return new Promise((resolve) => {
-    const localTsc = join(
-      rootDir,
-      "node_modules",
-      ".bin",
-      process.platform === "win32" ? "tsc.cmd" : "tsc",
-    );
-    const command = existsSync(localTsc)
-      ? localTsc
-      : process.platform === "win32"
-        ? "npx.cmd"
-        : "npx";
-    const args = existsSync(localTsc)
-      ? ["--noEmit", "--pretty", "true"]
-      : ["tsc", "--noEmit", "--pretty", "true"];
-    const child = spawn(command, args, {
-      cwd: rootDir,
-      stdio: ["ignore", "pipe", "pipe"],
-      shell: process.platform === "win32" && command.endsWith(".cmd"),
-      windowsHide: true,
-    });
-    const chunks: Buffer[] = [];
-
-    child.stdout?.on("data", (chunk: Buffer) => chunks.push(chunk));
-    child.stderr?.on("data", (chunk: Buffer) => chunks.push(chunk));
-    child.once("error", (error) => {
-      resolve({
-        exitCode: 1,
-        output: error.message,
-      });
-    });
-    child.once("close", (exitCode) => {
-      resolve({
-        exitCode,
-        output: Buffer.concat(chunks).toString("utf-8"),
-      });
-    });
-  });
 }
 
 function normalizeTscOutput(output: string): string {

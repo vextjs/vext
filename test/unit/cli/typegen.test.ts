@@ -135,6 +135,9 @@ describe("typegenCommand", () => {
 
     expect(servicesGenerated).toBe(expectedServices);
     expect(appExtensionsGenerated).toBe(expectedAppExtensions);
+    await expect(
+      readFile(join(projectRoot, "src/types/generated/index.d.ts"), "utf-8"),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("falls back to unknown when multiple plugins extend the same key with conflicting types", async () => {

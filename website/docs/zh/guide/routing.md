@@ -466,7 +466,7 @@ app.post(
 );
 ```
 
-校验顺序：`param` → `query` → `header` → `body`。任一位置校验失败会立即返回 422 错误响应。
+校验顺序为 `param` → `query` → `header` → `body`。路径 `param` 非法时立即返回 HTTP `400`，其他位置失败时立即返回 HTTP `422`。
 
 ### 校验错误响应
 

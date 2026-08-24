@@ -370,9 +370,23 @@ describe("OpenAPIGenerator", () => {
       // ErrorResponse 结构
       const err = doc.components!.schemas!.ErrorResponse;
       expect(err.type).toBe("object");
-      expect(err.properties!.code.type).toBe("integer");
+      expect(err.properties!.code.oneOf).toEqual([
+        { type: "integer" },
+        { type: "string" },
+      ]);
       expect(err.properties!.message.type).toBe("string");
       expect(err.properties!.requestId.type).toBe("string");
+      expect(err.properties!.details.oneOf).toEqual([
+        { type: "object", additionalProperties: true },
+        { type: "array", items: {} },
+      ]);
+      expect(err.properties!.errors).toMatchObject({
+        type: "array",
+        items: {
+          type: "object",
+          required: ["field", "message"],
+        },
+      });
       expect(err.required).toEqual(["code", "message", "requestId"]);
 
       // SuccessResponse 结构

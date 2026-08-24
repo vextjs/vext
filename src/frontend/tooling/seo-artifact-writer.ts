@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { constants, existsSync } from "node:fs";
+import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type {
   ResolvedVextFrontendConfig,
@@ -101,6 +101,7 @@ export async function writeFrontendSeoArtifacts(
     options.config.outDir,
     `.vext-seo-stage-${randomUUID()}`,
   );
+  const committedTargets: string[] = [];
   try {
     for (const artifact of planned) {
       const staged = resolveContainedOutputPath(stage, artifact.file);
@@ -113,14 +114,16 @@ export async function writeFrontendSeoArtifacts(
         artifact.file,
       );
       await mkdir(path.dirname(target), { recursive: true });
-      await rename(resolveContainedOutputPath(stage, artifact.file), target);
+      await copyFile(
+        resolveContainedOutputPath(stage, artifact.file),
+        target,
+        constants.COPYFILE_EXCL,
+      );
+      committedTargets.push(target);
     }
   } catch (error) {
-    for (const artifact of planned) {
-      await rm(
-        resolveContainedOutputPath(options.config.outDir, artifact.file),
-        { force: true },
-      ).catch(() => undefined);
+    for (const target of committedTargets) {
+      await rm(target, { force: true }).catch(() => undefined);
     }
     throw error;
   } finally {

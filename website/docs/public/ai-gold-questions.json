@@ -86,6 +86,48 @@
       ]
     },
     {
+      "id": "framework-seo",
+      "locale": "en",
+      "question": "How do framework defaults, route SEO, and per-render SEO combine, and where are sitemap and robots outputs configured?",
+      "requiredRoutes": ["/frontend/seo-sitemap"],
+      "mustNotClaim": ["SEO metadata bypasses validation or origin selection"]
+    },
+    {
+      "id": "whole-page-no-hydration",
+      "locale": "en",
+      "question": "How can a VextJS page keep SSR HTML while shipping no hydration runtime, payload, or route JavaScript?",
+      "requiredRoutes": ["/frontend/hydration"],
+      "mustNotClaim": ["hydration: none is the same as clientOnly"]
+    },
+    {
+      "id": "raw-app-db",
+      "locale": "en",
+      "question": "Which VextJS application property exposes the raw MonSQLize instance and its full upstream API?",
+      "requiredRoutes": ["/guide/database"],
+      "mustNotClaim": ["app.monsqlize remains a second v2 entry point"]
+    },
+    {
+      "id": "rate-limit-opt-in",
+      "locale": "en",
+      "question": "Is global rate limiting installed by default, and how is it explicitly enabled or overridden per route?",
+      "requiredRoutes": ["/guide/configuration"],
+      "mustNotClaim": ["Omitting rateLimit enables the global limiter"]
+    },
+    {
+      "id": "scaffold-type-ownership",
+      "locale": "en",
+      "question": "Which type directories belong to Vext tooling versus the application, and what differs between TypeScript and JavaScript starters?",
+      "requiredRoutes": ["/guide/cli"],
+      "mustNotClaim": ["JavaScript preflight creates src/types/generated"]
+    },
+    {
+      "id": "path-validation-status",
+      "locale": "en",
+      "question": "Which HTTP status is returned for invalid path parameters versus body, query, header, or cookie validation failures?",
+      "requiredRoutes": ["/guide/validation"],
+      "mustNotClaim": ["Every validate location returns HTTP 422"]
+    },
+    {
       "id": "frontend-rendering-model-zh",
       "locale": "zh",
       "question": "VextJS 当前默认的前端渲染模型是什么？",
@@ -163,6 +205,48 @@
       "question": "文档站是否默认启用了第三方 tracker？",
       "requiredRoutes": ["/zh/resources/documentation-data-and-ai"],
       "mustNotClaim": ["默认收集原始搜索内容或用户身份"]
+    },
+    {
+      "id": "framework-seo-zh",
+      "locale": "zh",
+      "question": "框架默认 SEO、路由 SEO 与单次渲染 SEO 如何合并，sitemap 和 robots 输出在哪里配置？",
+      "requiredRoutes": ["/zh/frontend/seo-sitemap"],
+      "mustNotClaim": ["SEO 元数据可以绕过校验或 origin 选择"]
+    },
+    {
+      "id": "whole-page-no-hydration-zh",
+      "locale": "zh",
+      "question": "VextJS 页面如何保留 SSR HTML，同时不发送 hydration runtime、payload 或路由 JavaScript？",
+      "requiredRoutes": ["/zh/frontend/hydration"],
+      "mustNotClaim": ["hydration: none 等同于 clientOnly"]
+    },
+    {
+      "id": "raw-app-db-zh",
+      "locale": "zh",
+      "question": "VextJS 应用通过哪个属性暴露原始 MonSQLize 实例及其完整上游 API？",
+      "requiredRoutes": ["/zh/guide/database"],
+      "mustNotClaim": ["v2 仍保留 app.monsqlize 作为第二入口"]
+    },
+    {
+      "id": "rate-limit-opt-in-zh",
+      "locale": "zh",
+      "question": "全局限流是否默认安装，如何显式启用并在路由级覆盖？",
+      "requiredRoutes": ["/zh/guide/configuration"],
+      "mustNotClaim": ["省略 rateLimit 会启用全局限流"]
+    },
+    {
+      "id": "scaffold-type-ownership-zh",
+      "locale": "zh",
+      "question": "哪些类型目录归 Vext 工具链所有，哪些归应用所有，TypeScript 与 JavaScript starter 有何不同？",
+      "requiredRoutes": ["/zh/guide/cli"],
+      "mustNotClaim": ["JavaScript preflight 会创建 src/types/generated"]
+    },
+    {
+      "id": "path-validation-status-zh",
+      "locale": "zh",
+      "question": "非法路径参数与 body、query、header、cookie 校验失败分别返回什么 HTTP 状态？",
+      "requiredRoutes": ["/zh/guide/validation"],
+      "mustNotClaim": ["所有 validate 位置都返回 HTTP 422"]
     }
   ]
 }

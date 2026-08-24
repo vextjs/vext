@@ -80,7 +80,7 @@ throw new Error("Database connection lost");
 
 ## 校验错误
 
-路由 `validate` 失败时，框架会返回 `422` 和字段级错误详情。自定义字段级错误可以抛出 `VextValidationError`：
+路由 `validate` 失败时，非法路径参数返回 HTTP `400`，query、header、cookie 与 body 失败返回 HTTP `422`，两者都包含字段级错误详情。自定义字段级错误可以抛出 `VextValidationError`：
 
 ```ts
 import { VextValidationError } from "vextjs";

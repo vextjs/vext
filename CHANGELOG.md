@@ -24,7 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Executable Hello World and MongoDB CRUD examples with install, typecheck,
   build, runtime, validation, and OpenAPI assertions.
 - Explicit TypeScript scaffold boundaries under `src/types/shared`,
-  `src/types/frontend`, and framework-owned `src/types/generated`.
+  `src/types/frontend`, and Vext-managed `src/types/generated`; JavaScript
+  starters do not receive a public TypeScript source tree.
 
 #### Changed
 
@@ -40,13 +41,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and cookie validation failures remain HTTP 422.
 - OpenAPI Docs now shares Vext brand geometry, favicon, teal/cyan light/dark
   tokens, and green/amber mark accents with the frontend.
-- Three-argument routes now fail the build when the route-options argument or
-  `RouteOptions.frontend` value is not an `inline object literal`; dynamic
-  request metadata remains supported through `res.render(..., { seo })`.
+- Build-indexed route metadata now follows a finite static grammar: literals,
+  same-file `const` bindings, TypeScript static wrappers, and a helper call's
+  statically projectable first argument are accepted. Dynamic paths and
+  request/response schema expressions, conditional registration, and nested
+  registration fail with route context instead of being silently omitted or
+  projected as phantom routes; request-dependent SEO remains supported through
+  `res.render(..., { seo })`.
 - Fastify handlers now retain reply ownership until a delayed SSR stream sends,
   preventing React streaming responses from being finalized as an empty body.
-- New TypeScript scaffolds declare `@types/node`; existing project trees remain
-  untouched and `vext typegen` continues to own only `src/types/generated`.
+- New TypeScript scaffolds declare `@types/node` and run
+  `vext build --typecheck` from the generated build script. TypeScript
+  create/dev/typegen owns `src/types/generated`; JavaScript flows keep tooling
+  declarations under `.vext/types` and do not create that public shim.
 
 #### Fixed
 
@@ -55,6 +62,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Ordinary `main` CI now distinguishes the unpublished 2.0.0 docs preview from
   npm stable 1.0.2; tag releases retain an exact-version gate, and automatic
   Pages deployment waits for the successful CI commit.
+- Pull requests execute the coverage job required by the aggregate `ci-ok`
+  gate, and final preflight reads external-consumer evidence for the current
+  package major instead of reusing v1 evidence.
+- SEO input is deeply normalized across defaults and routes; request-host
+  origin ambiguity, robots control characters, bare-wildcard endpoint
+  conflicts, and concurrent artifact-writer ownership now fail safely.
+- OpenAPI error responses and build-time request contracts now reuse the
+  runtime's canonical validation shapes, including path `400` versus other
+  request-validation `422` behavior.
+- TypeScript service loading now waits for its best-effort temporary-module
+  cleanup before returning, avoiding Windows directory-removal races under
+  concurrent test or application teardown.
 
 #### Removed
 
@@ -69,7 +88,7 @@ the package has been published.
 | Version | Date | Type | Key Theme |
 |---------|------|------|-----------|
 | [Unreleased] | — | — | — |
-| [2.0.0] | 2026-08-20 | Major candidate | Framework SEO/sitemaps, pure-HTML SSR routes, branded OpenAPI Docs, executable examples, raw `app.db`, explicit type boundaries, and opt-in rate limiting |
+| [2.0.0] | — | Major candidate | Framework SEO/sitemaps, pure-HTML SSR routes, branded OpenAPI Docs, executable examples, raw `app.db`, explicit type boundaries, and opt-in rate limiting [view](./changelogs/v2.0.0.md) |
 | [1.0.2] | 2026-08-17 | Patch | Runtime contract fixes, OpenAPI/upload lifecycle documentation, adapter-matrix benchmark documentation, dependency and release hardening [view](./changelogs/v1.0.2.md) |
 | [1.0.1] | 2026-08-10 | Patch | Docs/release validation: English product README, locale-specific AI indexes, `npx vextjs create` cold-start, identity/contract/compare URL fixes [view](./changelogs/v1.0.1.md) |
 | [1.0.0] | 2026-08-10 | Major | 首个稳定 v1：schema-dsl v3 / monsqlize 3.1 固定 GA 依赖、完整 route-native 前端运行时、SSR starter、文档与发布安全门禁；包含 Hono Node 流式响应桥生命周期修复 [查看](./changelogs/v1.0.0.md) |

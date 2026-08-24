@@ -16,6 +16,7 @@ export interface RunTypegenOptions {
   rootDir: string;
   generateServices: boolean;
   generateAppExtensions: boolean;
+  generateShim?: boolean;
   checkOnly?: boolean;
   writeManifest?: boolean;
 }
@@ -35,6 +36,7 @@ export async function runTypegen(
     rootDir,
     generateServices,
     generateAppExtensions,
+    generateShim = true,
     checkOnly = false,
     writeManifest = false,
   } = options;
@@ -58,7 +60,7 @@ export async function runTypegen(
     warnings.push(...appExtensionsResult.warnings);
   }
 
-  if (files.length > 0) {
+  if (generateShim && files.length > 0) {
     files.push(
       await generateTypegenShim(
         rootDir,

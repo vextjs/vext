@@ -33,7 +33,7 @@ export default defineRoutes((app) => {
 });
 ```
 
-After passing the verification, obtain the type-converted data through `req.valid(location)`. When the verification fails, the framework automatically returns a 422 error response, without manual processing.
+After validation, obtain the converted data through `req.valid(location)`. An invalid `param` returns HTTP `400`; an invalid `query`, `header`, `cookie`, or `body` returns HTTP `422`, without manual handler code.
 
 ## Check location
 
@@ -256,7 +256,7 @@ app.post(
 
 3. **Handler will not be reached when verification fails**
 
-   When the verification fails, the framework will automatically return a 422 error response before the handler is executed, so the data must have passed the verification when calling `req.valid()` inside the handler.
+   Before the handler runs, an invalid path `param` returns HTTP `400`, while an invalid `query`, `header`, `cookie`, or `body` returns HTTP `422`. Data read through `req.valid()` inside the handler has therefore passed validation.
 
 ```typescript
 //Boundary case example
@@ -323,7 +323,7 @@ must match the runtime contract maintained by the application.
 
 ## Verification error response
 
-When the verification fails, the framework automatically returns a structured error response with a 422 status code:
+Validation failures use one structured error shape. Invalid path `param` data returns HTTP/code `400`; invalid `query`, `header`, `cookie`, or `body` data returns HTTP/code `422`. The following is a `422` example:
 
 ```json
 {

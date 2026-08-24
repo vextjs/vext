@@ -200,7 +200,7 @@ export default defineRoutes((app) => {
     });
   });
 
-  it("fails closed when route frontend metadata cannot be statically projected", async () => {
+  it("resolves const frontend metadata when it is statically projectable", async () => {
     projectRoot = await mkdtemp(join(tmpdir(), "vext-route-index-dynamic-"));
     await writeProjectFile(
       projectRoot,
@@ -220,12 +220,18 @@ export default defineRoutes((app) => {
 `,
     );
 
-    await expect(buildRouteIndex(projectRoot)).rejects.toThrow(
-      /RouteOptions\.frontend.*inline JSON-safe object literal/u,
-    );
+    await expect(buildRouteIndex(projectRoot)).resolves.toEqual([
+      expect.objectContaining({
+        path: "/dynamic",
+        freshness: expect.objectContaining({
+          hydration: "none",
+          seo: { title: "Dynamic declaration" },
+        }),
+      }),
+    ]);
   });
 
-  it("fails closed when the complete route options expression is runtime-owned", async () => {
+  it("resolves a complete const route options expression", async () => {
     projectRoot = await mkdtemp(
       join(tmpdir(), "vext-route-index-options-expression-"),
     );
@@ -246,8 +252,264 @@ export default defineRoutes((app) => {
 `,
     );
 
+    await expect(buildRouteIndex(projectRoot)).resolves.toEqual([
+      expect.objectContaining({
+        path: "/dynamic",
+        freshness: expect.objectContaining({ hydration: "none" }),
+      }),
+    ]);
+  });
+
+  it("uses lexical masking and projects const/helper route request contracts", async () => {
+    projectRoot = await mkdtemp(join(tmpdir(), "vext-route-index-static-"));
+    await writeProjectFile(
+      projectRoot,
+      "src/routes/index.ts",
+      `import { defineRoutes } from "vextjs";
+
+const ROUTE_PATH = "/items/:id" as const;
+const validation = {
+  param: { id: "string!" },
+  query: { page: "number:1-!", search: "string?" },
+};
+const routeOptions = {
+  ignored: { docs: { summary: "Nested decoy" } },
+  validate: validation,
+  docs: {
+    summary: "Static item",
+    operationId: "getStaticItem",
+  },
+  frontend: { mode: "dynamic", tags: ["items"] },
+};
+const unicodeDecoy = "😀 app.get('/unicode-decoy', {}, handler)";
+const fakePattern = /app\\.get\\(\"\\/fake\", { docs: { summary: \"Fake\" } }\\)/;
+
+export default defineRoutes((app) => {
+  // app.get("/commented", {}, handler);
+  app.get(
+    ROUTE_PATH,
+    requireAuth(routeOptions),
+    async (req, res) => res.json({ id: req.params.id }),
+  );
+});
+`,
+    );
+
+    const [entry] = await buildRouteIndex(projectRoot);
+
+    expect(entry).toMatchObject({
+      method: "GET",
+      path: "/items/:id",
+      docsSummary: "Static item",
+      operationId: "getStaticItem",
+      freshness: { mode: "dynamic", source: "route-options", tags: ["items"] },
+      schema: {
+        request: {
+          params: expect.objectContaining({
+            source: "validate",
+            sourcePath: "validate.param",
+          }),
+          query: expect.objectContaining({
+            source: "validate",
+            sourcePath: "validate.query",
+          }),
+        },
+      },
+    });
+    expect(entry?.schema.request.params?.schema).toMatchObject({
+      type: "object",
+      required: ["id"],
+    });
+    expect(entry?.schema.request.query?.schema).toMatchObject({
+      type: "object",
+      required: ["page"],
+    });
+  });
+
+  it("does not treat a property-chain lookalike as the defineRoutes receiver", async () => {
+    projectRoot = await mkdtemp(join(tmpdir(), "vext-route-index-receiver-"));
+    await writeProjectFile(
+      projectRoot,
+      "src/routes/index.ts",
+      `import { defineRoutes } from "vextjs";
+export default defineRoutes((app) => {
+  services.app.get("/not-a-vext-route", dynamicOptions, handler);
+  app.get("/real", async (_req, res) => res.json({ ok: true }));
+});
+`,
+    );
+
+    await expect(buildRouteIndex(projectRoot)).resolves.toEqual([
+      expect.objectContaining({ method: "GET", path: "/real" }),
+    ]);
+  });
+
+  it("does not treat a property-chain defineRoutes lookalike as a route block", async () => {
+    projectRoot = await mkdtemp(
+      join(tmpdir(), "vext-route-index-define-routes-receiver-"),
+    );
+    await writeProjectFile(
+      projectRoot,
+      "src/routes/index.ts",
+      `import { defineRoutes } from "vextjs";
+
+helpers.defineRoutes((app) => {
+  app.get("/not-a-vext-route", dynamicOptions, handler);
+});
+
+export default defineRoutes((app) => {
+  app.get("/real", async (_req, res) => res.json({ ok: true }));
+});
+`,
+    );
+
+    await expect(buildRouteIndex(projectRoot)).resolves.toEqual([
+      expect.objectContaining({ method: "GET", path: "/real" }),
+    ]);
+  });
+
+  it("fails closed for route registration nested under runtime control flow", async () => {
+    projectRoot = await mkdtemp(join(tmpdir(), "vext-route-index-nested-"));
+    await writeProjectFile(
+      projectRoot,
+      "src/routes/index.ts",
+      `import { defineRoutes } from "vextjs";
+export default defineRoutes((app) => {
+  if (process.env.ENABLE_INTERNAL_ROUTE) {
+    app.get("/conditional", async (_req, res) => res.json({ ok: true }));
+  }
+  app.get("/real", async (_req, res) => res.json({ ok: true }));
+});
+`,
+    );
+
     await expect(buildRouteIndex(projectRoot)).rejects.toThrow(
-      /route options.*inline object literal/u,
+      /src\/routes\/index\.ts GET.*direct top-level statement/u,
+    );
+  });
+
+  it("fails closed for an unbraced conditional route registration", async () => {
+    projectRoot = await mkdtemp(
+      join(tmpdir(), "vext-route-index-unbraced-conditional-"),
+    );
+    await writeProjectFile(
+      projectRoot,
+      "src/routes/index.ts",
+      `import { defineRoutes } from "vextjs";
+export default defineRoutes((app) => {
+  if (process.env.ENABLE_INTERNAL_ROUTE)
+    app.get("/conditional", async (_req, res) => res.json({ ok: true }));
+});
+`,
+    );
+
+    await expect(buildRouteIndex(projectRoot)).rejects.toThrow(
+      /src\/routes\/index\.ts GET.*direct top-level statement/u,
+    );
+  });
+
+  it("mirrors JavaScript last-property-wins semantics for indexed options", async () => {
+    projectRoot = await mkdtemp(join(tmpdir(), "vext-route-index-duplicate-"));
+    await writeProjectFile(
+      projectRoot,
+      "src/routes/index.js",
+      `import { defineRoutes } from "vextjs";
+export default defineRoutes((app) => {
+  app.get("/items", {
+    validate: { query: { first: "string!" } },
+    validate: { query: { last: "integer!" } },
+  }, handler);
+});
+`,
+    );
+
+    const [entry] = await buildRouteIndex(projectRoot);
+    expect(entry?.schema.request.query?.schema).toMatchObject({
+      properties: { last: expect.any(Object) },
+      required: ["last"],
+    });
+    expect(entry?.schema.request.query?.schema).not.toHaveProperty(
+      "properties.first",
+    );
+  });
+
+  it("fails closed instead of silently ignoring computed route-option keys", async () => {
+    projectRoot = await mkdtemp(join(tmpdir(), "vext-route-index-computed-"));
+    await writeProjectFile(
+      projectRoot,
+      "src/routes/index.js",
+      `import { defineRoutes } from "vextjs";
+export default defineRoutes((app) => {
+  app.get("/items", {
+    ["validate"]: { query: { page: "integer!" } },
+  }, handler);
+});
+`,
+    );
+
+    await expect(buildRouteIndex(projectRoot)).rejects.toThrow(
+      /route options.*computed property keys/u,
+    );
+  });
+
+  it.each([
+    [
+      "dynamic path",
+      'const suffix = "items"; app.get(`/api/${suffix}`, {}, handler);',
+      /src\/routes\/index\.ts GET.*route path.*statically resolvable/u,
+    ],
+    [
+      "unsupported escaped path literal",
+      'app.get("/caf\\u00e9", {}, handler);',
+      /src\/routes\/index\.ts GET.*route path.*statically resolvable/u,
+    ],
+    [
+      "dynamic validate schema",
+      'app.get("/items", { validate: { query: createSchema() } }, handler);',
+      /src\/routes\/index\.ts GET \/items.*validate.*statically resolvable/u,
+    ],
+    [
+      "dynamic response schema",
+      'app.get("/items", { responses: { 200: { schema: createSchema() } } }, handler);',
+      /src\/routes\/index\.ts GET \/items.*responses\.200\.schema.*statically resolvable/u,
+    ],
+  ])("fails closed with context for %s", async (_label, declaration, error) => {
+    projectRoot = await mkdtemp(join(tmpdir(), "vext-route-index-closed-"));
+    await writeProjectFile(
+      projectRoot,
+      "src/routes/index.ts",
+      `import { defineRoutes } from "vextjs";
+export default defineRoutes((app) => {
+  ${declaration}
+});
+`,
+    );
+
+    await expect(buildRouteIndex(projectRoot)).rejects.toThrow(error);
+  });
+
+  it("fails closed when a referenced same-file const binding is ambiguous", async () => {
+    projectRoot = await mkdtemp(join(tmpdir(), "vext-route-index-ambiguous-"));
+    await writeProjectFile(
+      projectRoot,
+      "src/routes/index.ts",
+      `import { defineRoutes } from "vextjs";
+
+const routeOptions = { validate: { query: { page: "number!" } } };
+
+export default defineRoutes((app) => {
+  app.get("/items", routeOptions, handler);
+});
+
+function shadowedScope() {
+  const routeOptions = { validate: { query: { cursor: "string!" } } };
+  return routeOptions;
+}
+`,
+    );
+
+    await expect(buildRouteIndex(projectRoot)).rejects.toThrow(
+      /src\/routes\/index\.ts GET \/items route options.*ambiguous same-file const binding "routeOptions"/u,
     );
   });
 

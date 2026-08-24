@@ -240,7 +240,11 @@ document/data/assets，同时有意跳过服务端 page body；它不是 PPR，�
 
 `hydration: "none"` 与 `clientOnly` 的方向相反：它要求并保留 SSR page body，但移除 Vext/React browser runtime、hydration data 与路由 JS preload。它不能与 `clientOnly` 或关闭 SSR 组合。`seo` 是静态、JSON-safe 的路由元数据，会在单次 render SEO 前合并。
 
-三参数路由的 route-options 参数及其 `RouteOptions.frontend` 值都必须是 `inline object literal`，避免构建索引与运行时产生分歧。构建索引不会执行导入变量或 helper 返回值；依赖请求数据的元数据应放在 `res.render(..., { seo })`。详见 [SEO、Sitemap 与 Robots](/zh/frontend/seo-sitemap)。
+构建索引涉及的路径与路由元数据使用有限静态语法，避免构建索引与运行时产生分歧。索引接受字面量、同文件 `const` 绑定、TypeScript 的 `as const` / 简单 `as Type` / `satisfies` 包装，以及第一参数可静态投影的 helper 调用。索引不会执行 helper 函数体，因此只在 helper 内新增的元数据不会被投影；注释、字符串、模板文本与正则表达式也不会参与结构匹配。
+
+每个 `app.get(...)` / `app.post(...)` 注册都必须是 `defineRoutes` 回调内的直接顶层语句。条件式或嵌套注册会阻断静态投影，因为构建索引无法保证运行时控制流是否执行该注册。
+
+索引不会执行导入值、计算表达式或带插值的模板字符串。路由 path、任一 `validate` 位置或 response schema 无法静态投影时，build/doctor/typegen 会携带文件、HTTP method 与 route 上下文失败，而不是静默漏掉路由或生成空合同。依赖请求数据的元数据应放在 `res.render(..., { seo })`。详见 [SEO、Sitemap 与 Robots](/zh/frontend/seo-sitemap)。
 
 ### 完整示例
 
@@ -291,7 +295,7 @@ app.put(
 
 ## validate
 
-声明式参数校验，基于 `schema-dsl` DSL 语法。框架自动在 handler 执行前进行校验，校验失败返回 `422` 错误。
+声明式参数校验基于 `schema-dsl` DSL 语法，并在 handler 执行前完成。`param`（路径参数）非法时返回 HTTP `400`；`query`、`header`、`cookie` 或 `body` 非法时返回 HTTP `422`。
 
 字段类型为 `VextSchemaField`，支持 schema-dsl 字符串、字段级 DslBuilder、嵌套对象和对象数组。字段级 DslBuilder 常用于给 OpenAPI 文档补充业务描述：
 
@@ -407,7 +411,7 @@ const body = req.valid("body");
 
 ### 校验失败响应
 
-校验失败时框架自动返回 `422` 状态码：
+`query`、`header`、`cookie` 或 `body` 校验失败时返回 HTTP `422`，结构如下。`validate.param` 失败使用相同错误结构，但 HTTP status 与 `code` 为 `400`，因为 URL 路径本身无效：
 
 ```json
 {

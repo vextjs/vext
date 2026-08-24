@@ -13,6 +13,18 @@ const failures = [];
 const packageVersion = JSON.parse(
   readFileSync(path.join(root, "package.json"), "utf8"),
 ).version;
+const requiredCapabilityIds = [
+  "framework-seo",
+  "whole-page-no-hydration",
+  "raw-app-db",
+  "rate-limit-opt-in",
+  "scaffold-type-ownership",
+  "path-validation-status",
+];
+const requiredGoldQuestionIds = requiredCapabilityIds.flatMap((id) => [
+  id,
+  `${id}-zh`,
+]);
 
 function fail(message) {
   failures.push(message);
@@ -301,6 +313,33 @@ function verifyDocumentationGrowthContract() {
     if (capabilities.schemaVersion !== "vext.capabilities/v1") {
       fail("capabilities.json must declare vext.capabilities/v1");
     }
+    if (capabilities.version !== packageVersion) {
+      fail(
+        `capabilities.json must declare framework version ${packageVersion}`,
+      );
+    }
+    const capabilityEntries = capabilities.capabilities ?? [];
+    if (!Array.isArray(capabilityEntries)) {
+      fail("capabilities.json must contain a capabilities array");
+    } else {
+      const capabilityIds = new Set(capabilityEntries.map((item) => item.id));
+      for (const id of requiredCapabilityIds) {
+        if (!capabilityIds.has(id)) {
+          fail(`capabilities.json is missing required v2 capability: ${id}`);
+        }
+      }
+      for (const capability of capabilityEntries) {
+        if (
+          !capability.id ||
+          !capability.label ||
+          !documentationSourceForRoute(capability.documentationRoute)
+        ) {
+          fail(
+            `capabilities.json contains an incomplete or unmapped capability: ${capability.id ?? "unknown"}`,
+          );
+        }
+      }
+    }
     const excluded = capabilities.frontend?.explicitNonGoals ?? [];
     for (const id of [
       "react-server-components",
@@ -326,6 +365,14 @@ function verifyDocumentationGrowthContract() {
       fail(
         "ai-gold-questions.json must contain at least 20 citation questions",
       );
+    }
+    const questionIds = new Set(
+      (questions.questions ?? []).map((question) => question.id),
+    );
+    for (const id of requiredGoldQuestionIds) {
+      if (!questionIds.has(id)) {
+        fail(`ai-gold-questions.json is missing required v2 question: ${id}`);
+      }
     }
     for (const question of questions.questions ?? []) {
       if (
@@ -820,6 +867,10 @@ function verifyFrontendSeoAndNoHydrationDocumentationContract() {
     const hydrationDocs = `website/docs/${locale}/frontend/hydration.md`;
     const routeDocs = `website/docs/${locale}/api/route-definition.md`;
     const openapiDocs = `website/docs/${locale}/guide/openapi.md`;
+    const staticGrammarTokens =
+      locale === "en"
+        ? ["finite static grammar", "same-file `const`", "helper call"]
+        : ["有限静态语法", "同文件 `const`", "helper 调用"];
 
     requireTokens(seoDocs, [
       "frontend.seo",
@@ -838,8 +889,7 @@ function verifyFrontendSeoAndNoHydrationDocumentationContract() {
       "Partial",
       "Islands",
       "PPR",
-      "`RouteOptions.frontend`",
-      "`inline object literal`",
+      ...staticGrammarTokens,
     ]);
     requireTokens(renderingDocs, [
       'hydration: "none"',
@@ -857,8 +907,7 @@ function verifyFrontendSeoAndNoHydrationDocumentationContract() {
       "Islands",
       "PPR",
       "E:\\Worker\\vextjs-test",
-      "`RouteOptions.frontend`",
-      "`inline object literal`",
+      ...staticGrammarTokens,
       "res.render(..., { seo })",
     ]);
     requireTokens(routeDocs, [
@@ -866,8 +915,7 @@ function verifyFrontendSeoAndNoHydrationDocumentationContract() {
       "originKey?: string",
       "clientOnly",
       "Vext/React",
-      "`RouteOptions.frontend`",
-      "`inline object literal`",
+      ...staticGrammarTokens,
       "res.render(..., { seo })",
     ]);
     requireTokens(openapiDocs, ["Vext Docs Renderer", "favicon", "/docs"]);
@@ -1678,7 +1726,34 @@ function verifyRenderedMachineArtifacts() {
     }
   }
 
+  const renderedCapabilities = readRenderedJson("capabilities.json");
+  if (renderedCapabilities?.version !== packageVersion) {
+    fail(
+      `website/dist/capabilities.json must declare framework version ${packageVersion}`,
+    );
+  }
+  const renderedCapabilityIds = new Set(
+    (renderedCapabilities?.capabilities ?? []).map((item) => item.id),
+  );
+  for (const id of requiredCapabilityIds) {
+    if (!renderedCapabilityIds.has(id)) {
+      fail(
+        `website/dist/capabilities.json is missing required v2 capability: ${id}`,
+      );
+    }
+  }
+
   const questions = readRenderedJson("ai-gold-questions.json");
+  const renderedQuestionIds = new Set(
+    (questions?.questions ?? []).map((question) => question.id),
+  );
+  for (const id of requiredGoldQuestionIds) {
+    if (!renderedQuestionIds.has(id)) {
+      fail(
+        `website/dist/ai-gold-questions.json is missing required v2 question: ${id}`,
+      );
+    }
+  }
   for (const question of questions?.questions ?? []) {
     for (const route of question.requiredRoutes ?? []) {
       if (!entriesByRoute.has(normalizeTargetPath(route))) {

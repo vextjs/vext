@@ -48,10 +48,12 @@ or hash.
 
 ## Page-level Metadata
 
-Static, JSON-safe metadata belongs on the existing route declaration. For a
-three-argument route, both the route-options argument and
-`RouteOptions.frontend` must be an `inline object literal`; the build index does
-not execute imported variables or helper functions:
+Static, JSON-safe metadata belongs on the existing route declaration. Its
+finite static grammar treats inline objects as the simplest form and also
+accepts same-file `const`
+bindings, TypeScript static wrappers, and a helper call whose first argument is
+a statically projectable options object. It does not execute the helper body,
+imported values, computed expressions, or interpolated templates:
 
 ```ts
 app.get(
