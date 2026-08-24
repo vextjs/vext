@@ -20,7 +20,13 @@ const prettierExtensions = new Set([
 const args = new Set(process.argv.slice(2));
 const write = args.has("--write");
 const all = args.has("--all") || process.env.FORMAT_CHECK_ALL === "1";
-const prettierArgs = [write ? "--write" : "--check"];
+// Pin the ignore source to a tracked file so an ignored local
+// .prettierignore cannot make local validation weaker than a clean CI clone.
+const prettierArgs = [
+  write ? "--write" : "--check",
+  "--ignore-path",
+  ".gitignore",
+];
 
 function git(args) {
   return execFileSync("git", args, { encoding: "utf8" })

@@ -9,6 +9,10 @@ function workflow(name: string): string {
   );
 }
 
+function script(name: string): string {
+  return readFileSync(path.join(process.cwd(), "scripts", name), "utf8");
+}
+
 describe("main CI and deployment workflow contract", () => {
   it("runs push CI on main while retaining pull requests to main", () => {
     const ci = workflow("ci.yml");
@@ -28,6 +32,13 @@ describe("main CI and deployment workflow contract", () => {
     expect(coverageJob).not.toMatch(/if:\s*github\.event_name == 'push'/u);
     expect(ci).toMatch(/needs:[\s\S]*coverage,[\s\S]*docs-build,/u);
     expect(ci).toContain("${{ needs.coverage.result }}");
+  });
+
+  it("uses a tracked ignore source for reproducible Prettier checks", () => {
+    const formatCheck = script("format-check.mjs");
+
+    expect(formatCheck).toContain('"--ignore-path"');
+    expect(formatCheck).toContain('".gitignore"');
   });
 
   it("keeps exact public-version validation in the tag release", () => {
