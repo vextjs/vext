@@ -24,6 +24,10 @@ function defineRoutes(factory: RouteFactory): RouteDefinition;
 type RouteFactory = (app: VextApp) => void;
 ```
 
+路由 `factory` 必须同步：不要声明为 `async`，也不要返回 `Promise`。单条路由的
+handler 仍然可以是 `async`。该约束保证运行时注册、构建索引、Doctor 与 typegen
+看到同一组可静态投影路由。
+
 ### 工作原理
 
 1. `defineRoutes(factory)` 被调用时，内部创建一个 **collector**（路由收集器）
@@ -240,7 +244,7 @@ document/data/assets，同时有意跳过服务端 page body；它不是 PPR，�
 
 `hydration: "none"` 与 `clientOnly` 的方向相反：它要求并保留 SSR page body，但移除 Vext/React browser runtime、hydration data 与路由 JS preload。它不能与 `clientOnly` 或关闭 SSR 组合。`seo` 是静态、JSON-safe 的路由元数据，会在单次 render SEO 前合并。
 
-构建索引涉及的路径与路由元数据使用有限静态语法，避免构建索引与运行时产生分歧。索引接受字面量、同文件 `const` 绑定、TypeScript 的 `as const` / 简单 `as Type` / `satisfies` 包装，以及第一参数可静态投影的 helper 调用。索引不会执行 helper 函数体，因此只在 helper 内新增的元数据不会被投影；注释、字符串、模板文本与正则表达式也不会参与结构匹配。
+构建索引涉及的路径与路由元数据使用有限静态语法，避免构建索引与运行时产生分歧。索引接受字面量、同文件 `const` 绑定，以及 TypeScript 的 `as const` / 简单 `as Type` / `satisfies` 包装。route options helper 调用会被拒绝：索引不会执行 helper 函数体，无法确认它是否新增、删除或覆盖合同字段。请内联 helper 的最终对象，或把该最终对象保存为同文件 `const` 后直接传入。注释、字符串、模板文本与正则表达式不会参与结构匹配。
 
 每个 `app.get(...)` / `app.post(...)` 注册都必须是 `defineRoutes` 回调内的直接顶层语句。条件式或嵌套注册会阻断静态投影，因为构建索引无法保证运行时控制流是否执行该注册。
 
@@ -249,19 +253,9 @@ document/data/assets，同时有意跳过服务端 page body；它不是 PPR，�
 ### 完整示例
 
 ```typescript
-import type { RouteOptions } from "vextjs";
-
-function requireAuth(options: RouteOptions): RouteOptions {
-  return {
-    ...options,
-    middlewares: ["auth"],
-    auth: { required: true, security: "bearerAuth" },
-  };
-}
-
 app.put(
   "/users/:id",
-  requireAuth({
+  {
     validate: {
       param: { id: "string:1-" },
       body: {
@@ -275,6 +269,8 @@ app.put(
       404: { schema: { code: "integer!", message: "string!" } },
     },
     cache: false,
+    middlewares: ["auth"],
+    auth: { required: true, security: "bearerAuth" },
     docs: {
       summary: "更新用户",
       responses: {
@@ -286,7 +282,7 @@ app.put(
       rateLimit: { max: 10, window: 60 },
       maxBodySize: "5mb",
     },
-  }),
+  },
   handler,
 );
 ```
@@ -321,6 +317,11 @@ app.post(
 ```
 
 这些 description 会进入 OpenAPI schema，同时保留必填、枚举和长度等约束。
+
+静态投影器只识别从 `vextjs` named import 的 `schemaAdapter`（允许 alias）、
+`compileField(<静态字符串>)` 与最多一次 `.description(<静态字符串>)`。完整 builder
+可保存为同文件无歧义 `const`。导入的 builder、动态参数、其他 call chain 以及不透明的
+Zod/Yup 对象都会阻断构建，不会生成残缺的 request contract。
 
 ### 校验位置
 
@@ -1094,15 +1095,7 @@ export default defineRoutes((app) => {
 
 ```typescript
 // src/routes/users.ts
-import { defineRoutes, type RouteOptions } from "vextjs";
-
-function requireAuth(options: RouteOptions): RouteOptions {
-  return {
-    ...options,
-    middlewares: ["auth"],
-    auth: { required: true, security: "bearerAuth" },
-  };
-}
+import { defineRoutes } from "vextjs";
 
 export default defineRoutes((app) => {
   // GET /users/list
@@ -1141,12 +1134,14 @@ export default defineRoutes((app) => {
   // POST /users
   app.post(
     "/",
-    requireAuth({
+    {
       validate: {
         body: { name: "string:1-50", email: "email" },
       },
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
       docs: { summary: "创建用户" },
-    }),
+    },
     async (req, res) => {
       const data = req.valid("body");
       const user = await app.services.user.create(data);
@@ -1157,13 +1152,15 @@ export default defineRoutes((app) => {
   // PUT /users/:id
   app.put(
     "/:id",
-    requireAuth({
+    {
       validate: {
         param: { id: "string:1-" },
         body: { name: "string:1-50?", email: "email?" },
       },
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
       docs: { summary: "更新用户" },
-    }),
+    },
     async (req, res) => {
       const { id } = req.valid("param");
       const data = req.valid("body");
@@ -1175,12 +1172,14 @@ export default defineRoutes((app) => {
   // DELETE /users/:id
   app.delete(
     "/:id",
-    requireAuth({
+    {
       validate: {
         param: { id: "string:1-" },
       },
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
       docs: { summary: "删除用户" },
-    }),
+    },
     async (req, res) => {
       const { id } = req.valid("param");
       await app.services.user.delete(id);
@@ -1213,13 +1212,28 @@ export default defineRoutes((app) => {
 
 ### 路由文件必须 default export
 
+构建期消费者只接受有限的默认导出语法。`defineRoutes` 必须来自 `vextjs` named
+import（可使用 import alias），factory 必须是内联同步箭头函数或 function expression：
+
 ```typescript
-// ✅ 正确
+import { defineRoutes, defineRoutes as routes } from "vextjs";
+
+// ✅ 直接默认导出
 export default defineRoutes((app) => { ... });
 
-// ❌ 错误 — router-loader 无法识别
-export const routes = defineRoutes((app) => { ... });
+// ✅ alias + 内联 function expression
+export default routes(function (app) { ... });
+
+// ✅ 同文件顶层绑定
+const routeDefinition = defineRoutes((app) => { ... });
+export { routeDefinition as default };
+
+// ❌ 只有 named export 不构成路由文件身份
+export const ignored = defineRoutes((app) => { ... });
 ```
+
+重导出、导入的 route definition、property/namespace callee、callback identifier，
+以及没有受支持默认导出的文件都会失败，诊断中包含 route file。
 
 ### 路由路径规范化
 

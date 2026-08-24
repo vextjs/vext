@@ -87,5 +87,6 @@ export interface RouteCollector {
  *
  * 接收真实的 VextApp 对象，在其上注册路由。
  * 执行期间 HTTP 方法会临时指向 RouteCollector，其他 app 能力保持真实身份。
+ * factory 必须同步完成路由注册；async function 或 Promise 返回值会被拒绝。
  */
 export type RouteFactory = (app: VextApp) => void;

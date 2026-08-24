@@ -493,25 +493,16 @@ export default {
 };
 ```
 
-```typescript
-// src/auth/route-guards.ts
-import type { RouteOptions } from "vextjs";
-
-export function requireAuth(options: RouteOptions): RouteOptions {
-  return {
-    ...options,
-    middlewares: ["auth"],
-    auth: { required: true, security: "bearerAuth" },
-  };
-}
-```
+Route metadata is statically projected without executing route modules. Keep the authentication fields in the final inline options object, or in a same-file `const` passed directly to the route call; an options helper call is rejected by the finite static grammar.
 
 ```typescript
 app.get(
   "/profile",
-  requireAuth({
+  {
+    middlewares: ["auth"],
+    auth: { required: true, security: "bearerAuth" },
     docs: { summary: "Get current profile" },
-  }),
+  },
   handler,
 );
 ```
@@ -1567,21 +1558,13 @@ No need to restart the dev server, refresh the document page to see the updated 
 
 ```typescript
 // src/routes/orders.ts
-import { defineRoutes, type RouteOptions } from "vextjs";
-
-function requireAuth(options: RouteOptions): RouteOptions {
-  return {
-    ...options,
-    middlewares: ["auth"],
-    auth: { required: true, security: "bearerAuth" },
-  };
-}
+import { defineRoutes } from "vextjs";
 
 export default defineRoutes((app) => {
   // Get order list
   app.get(
     "/",
-    requireAuth({
+    {
       validate: {
         query: {
           page: "number:1-",
@@ -1607,7 +1590,9 @@ export default defineRoutes((app) => {
           },
         },
       },
-    }),
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
+    },
     async (req, res) => {
       const filters = req.valid("query");
       const orders = await app.services.order.findAll(filters);
@@ -1618,7 +1603,7 @@ export default defineRoutes((app) => {
   //Create order
   app.post(
     "/",
-    requireAuth({
+    {
       validate: {
         body: {
           productId: "string!",
@@ -1642,7 +1627,9 @@ export default defineRoutes((app) => {
           401: { description: "Not authenticated" },
         },
       },
-    }),
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
+    },
     async (req, res) => {
       const data = req.valid("body");
       const order = await app.services.order.create(data);
@@ -1653,7 +1640,7 @@ export default defineRoutes((app) => {
   // Cancel order
   app.post(
     "/:id/cancel",
-    requireAuth({
+    {
       validate: {
         param: { id: "string!" },
         body: { reason: "string:1-500?" },
@@ -1666,7 +1653,9 @@ export default defineRoutes((app) => {
           404: { description: "Order does not exist" },
         },
       },
-    }),
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
+    },
     async (req, res) => {
       const { id } = req.valid("param");
       const { reason } = req.valid("body");

@@ -6,6 +6,8 @@ import { prepareRouteResponseSerializers } from "./response-serializer.js";
 
 const ROUTE_INTERNALS_SYMBOL = Symbol.for("vext.routeDefinition.internals");
 
+const ASYNC_FUNCTION_PROTOTYPE = Object.getPrototypeOf(async function () {});
+
 interface RouteDefinitionInternals {
   factory: RouteFactory;
   collector: Record<string, unknown>;
@@ -61,10 +63,14 @@ const routeDefinitionInternals = new WeakMap<
  *   })
  * })
  */
-export function defineRoutes(factory: RouteFactory): RouteDefinition {
+export function defineRoutes<TFactory extends RouteFactory>(
+  factory: TFactory &
+    (ReturnType<TFactory> extends PromiseLike<unknown> ? never : unknown),
+): RouteDefinition {
   if (typeof factory !== "function") {
     throw new Error("[vextjs] defineRoutes(factory) expects a function.");
   }
+  assertSynchronousRouteFactory(factory);
 
   const routes: RouteRecord[] = [];
 
@@ -247,6 +253,8 @@ export function executeRouteFactory(
     );
   }
 
+  assertSynchronousRouteFactory(internals.factory);
+
   // 清空 routes 数组，避免重复调用时路由累积
   // （测试场景中 createTestApp 可能多次加载同一路由文件）
   routeDefinition.routes.length = 0;
@@ -279,7 +287,15 @@ export function executeRouteFactory(
   }
 
   try {
-    internals.factory(app);
+    const result = (internals.factory as (factoryApp: VextApp) => unknown)(app);
+    if (isPromiseLike(result)) {
+      throw synchronousFactoryError();
+    }
+  } catch (error) {
+    // Route collection is transactional: a failed factory must not leave a
+    // partial definition that a later reload or test execution could reuse.
+    routeDefinition.routes.length = 0;
+    throw error;
   } finally {
     for (const method of httpMethods) {
       const original = originals.get(method);
@@ -295,6 +311,26 @@ export function executeRouteFactory(
 
   // 保留内部 factory/collector：允许重复调用 executeRouteFactory
   // （测试场景多次 createTestApp、Phase 2 热重载都需要重新执行 factory）
+}
+
+function assertSynchronousRouteFactory(factory: RouteFactory): void {
+  if (Object.getPrototypeOf(factory) === ASYNC_FUNCTION_PROTOTYPE) {
+    throw synchronousFactoryError();
+  }
+}
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return (typeof value === "object" && value !== null) ||
+    typeof value === "function"
+    ? typeof (value as { then?: unknown }).then === "function"
+    : false;
+}
+
+function synchronousFactoryError(): Error {
+  return new Error(
+    "[vextjs] defineRoutes(factory) requires a synchronous factory. " +
+      "Async route factories are not supported because routes must be statically projectable.",
+  );
 }
 
 function getRouteDefinitionInternals(

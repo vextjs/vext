@@ -50,10 +50,11 @@ or hash.
 
 Static, JSON-safe metadata belongs on the existing route declaration. Its
 finite static grammar treats inline objects as the simplest form and also
-accepts same-file `const`
-bindings, TypeScript static wrappers, and a helper call whose first argument is
-a statically projectable options object. It does not execute the helper body,
-imported values, computed expressions, or interpolated templates:
+accepts same-file `const` bindings and TypeScript static wrappers. A route
+options helper call is rejected because the index does not execute helper
+bodies and cannot know their final metadata. Inline the final object or pass a
+same-file `const`. Imported values, computed expressions, and interpolated
+templates are not executed:
 
 ```ts
 app.get(

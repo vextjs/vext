@@ -60,15 +60,7 @@ Each route file uses `defineRoutes()` to export route definitions:
 
 ```typescript
 // src/routes/users.ts
-import { defineRoutes, type RouteOptions } from "vextjs";
-
-function requireAuth(options: RouteOptions): RouteOptions {
-  return {
-    ...options,
-    middlewares: ["auth"],
-    auth: { required: true, security: "bearerAuth" },
-  };
-}
+import { defineRoutes } from "vextjs";
 
 export default defineRoutes((app) => {
   //GET /users
@@ -101,7 +93,7 @@ export default defineRoutes((app) => {
   // POST /users
   app.post(
     "/",
-    requireAuth({
+    {
       validate: {
         body: {
           name: "string:1-50!",
@@ -109,8 +101,10 @@ export default defineRoutes((app) => {
           age: "number?",
         },
       },
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
       docs: { summary: "Create User" },
-    }),
+    },
     async (req, res) => {
       const data = req.valid("body");
       const user = await app.services.user.create(data);
@@ -121,13 +115,15 @@ export default defineRoutes((app) => {
   // PUT /users/:id
   app.put(
     "/:id",
-    requireAuth({
+    {
       validate: {
         param: { id: "string!" },
         body: { name: "string:1-50?", email: "email?" },
       },
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
       docs: { summary: "Update user" },
-    }),
+    },
     async (req, res) => {
       const { id } = req.valid("param");
       const data = req.valid("body");
@@ -139,10 +135,12 @@ export default defineRoutes((app) => {
   // DELETE /users/:id
   app.delete(
     "/:id",
-    requireAuth({
+    {
       validate: { param: { id: "string!" } },
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
       docs: { summary: "Delete user" },
-    }),
+    },
     async (req, res) => {
       const { id } = req.valid("param");
       await app.services.user.delete(id);
@@ -693,15 +691,7 @@ src/routes/
 
 ```typescript
 // src/routes/posts.ts
-import { defineRoutes, type RouteOptions } from "vextjs";
-
-function requireAuth(options: RouteOptions): RouteOptions {
-  return {
-    ...options,
-    middlewares: ["auth"],
-    auth: { required: true, security: "bearerAuth" },
-  };
-}
+import { defineRoutes } from "vextjs";
 
 export default defineRoutes((app) => {
   // GET /posts — paginated list
@@ -744,7 +734,7 @@ export default defineRoutes((app) => {
   // POST /posts — create posts (authentication required)
   app.post(
     "/",
-    requireAuth({
+    {
       validate: {
         body: {
           title: "string:1-200!",
@@ -752,6 +742,8 @@ export default defineRoutes((app) => {
           tags: "string?",
         },
       },
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
       docs: {
         summary: "Create article",
         responses: {
@@ -759,7 +751,7 @@ export default defineRoutes((app) => {
           401: { description: "Not authenticated" },
         },
       },
-    }),
+    },
     async (req, res) => {
       const data = req.valid("body");
       const post = await app.services.post.create({
@@ -773,7 +765,7 @@ export default defineRoutes((app) => {
   // PATCH /posts/:id — update post
   app.patch(
     "/:id",
-    requireAuth({
+    {
       validate: {
         param: { id: "string!" },
         body: {
@@ -782,8 +774,10 @@ export default defineRoutes((app) => {
           status: "draft|published|archived",
         },
       },
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
       docs: { summary: "Update article" },
-    }),
+    },
     async (req, res) => {
       const { id } = req.valid("param");
       const data = req.valid("body");
@@ -795,10 +789,12 @@ export default defineRoutes((app) => {
   // DELETE /posts/:id — delete post
   app.delete(
     "/:id",
-    requireAuth({
+    {
       validate: { param: { id: "string!" } },
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
       docs: { summary: "Delete article" },
-    }),
+    },
     async (req, res) => {
       const { id } = req.valid("param");
       await app.services.post.delete(id);

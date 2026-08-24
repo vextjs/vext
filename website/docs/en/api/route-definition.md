@@ -24,6 +24,11 @@ function defineRoutes(factory: RouteFactory): RouteDefinition;
 type RouteFactory = (app: VextApp) => void;
 ```
 
+The route `factory` must be synchronous: do not mark it `async` and do not
+return a `Promise`. Individual route handlers may still be `async`. This keeps
+runtime registration, build indexing, Doctor, and type generation on the same
+statically projectable route set.
+
 ### Working principle
 
 1. When `defineRoutes(factory)` is called, a **collector** (route collector) is created internally
@@ -245,11 +250,12 @@ and route JS preload. It cannot be combined with `clientOnly` or disabled SSR.
 `seo` is static, JSON-safe route metadata and is merged before per-render SEO.
 Build-indexed paths and route metadata use a finite static grammar so the build
 index and runtime cannot diverge. The index accepts literals, same-file `const`
-bindings, TypeScript `as const` / simple `as Type` / `satisfies` wrappers, and a
-helper call whose first argument is a statically projectable options object.
-The helper body is not executed, so metadata added only inside that helper is
-not projected. Comments, strings, template text, and regular expressions are
-ignored during structural matching.
+bindings, and TypeScript `as const` / simple `as Type` / `satisfies` wrappers.
+A route-options helper call is rejected because the index does not execute the
+helper body and cannot know whether it adds, removes, or replaces contract
+fields. Inline the helper's final object or store that final object in a
+same-file `const`. Comments, strings, template text, and regular expressions
+are ignored during structural matching.
 
 Each `app.get(...)` / `app.post(...)` registration must be a direct top-level
 statement in the `defineRoutes` callback. Conditional or nested registration
@@ -267,19 +273,9 @@ request-dependent metadata. See
 ### Complete example
 
 ```typescript
-import type { RouteOptions } from "vextjs";
-
-function requireAuth(options: RouteOptions): RouteOptions {
-  return {
-    ...options,
-    middlewares: ["auth"],
-    auth: { required: true, security: "bearerAuth" },
-  };
-}
-
 app.put(
   "/users/:id",
-  requireAuth({
+  {
     validate: {
       param: { id: "string:1-" },
       body: {
@@ -293,6 +289,8 @@ app.put(
       404: { schema: { code: "integer!", message: "string!" } },
     },
     cache: false,
+    middlewares: ["auth"],
+    auth: { required: true, security: "bearerAuth" },
     docs: {
       summary: "Update user",
       responses: {
@@ -304,7 +302,7 @@ app.put(
       rateLimit: { max: 10, window: 60 },
       maxBodySize: "5mb",
     },
-  }),
+  },
   handler,
 );
 ```
@@ -340,6 +338,13 @@ app.post(
   handler,
 );
 ```
+
+The static projector recognizes only `schemaAdapter` imported by name from
+`vextjs` (an alias is allowed), `compileField(<static string>)`, and at most one
+`.description(<static string>)`. The complete builder may be stored in an
+unambiguous same-file `const`. Imported builders, dynamic arguments, other call
+chains, and opaque Zod/Yup objects fail the build instead of producing a partial
+request contract.
 
 These descriptions will enter the OpenAPI schema while retaining constraints such as required, enumeration, and length.
 
@@ -1123,15 +1128,7 @@ Multiple routes can be registered in a routing file:
 
 ```typescript
 // src/routes/users.ts
-import { defineRoutes, type RouteOptions } from "vextjs";
-
-function requireAuth(options: RouteOptions): RouteOptions {
-  return {
-    ...options,
-    middlewares: ["auth"],
-    auth: { required: true, security: "bearerAuth" },
-  };
-}
+import { defineRoutes } from "vextjs";
 
 export default defineRoutes((app) => {
   // GET /users/list
@@ -1170,12 +1167,14 @@ export default defineRoutes((app) => {
   // POST /users
   app.post(
     "/",
-    requireAuth({
+    {
       validate: {
         body: { name: "string:1-50", email: "email" },
       },
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
       docs: { summary: "Create user" },
-    }),
+    },
     async (req, res) => {
       const data = req.valid("body");
       const user = await app.services.user.create(data);
@@ -1186,13 +1185,15 @@ export default defineRoutes((app) => {
   // PUT /users/:id
   app.put(
     "/:id",
-    requireAuth({
+    {
       validate: {
         param: { id: "string:1-" },
         body: { name: "string:1-50?", email: "email?" },
       },
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
       docs: { summary: "Update user" },
-    }),
+    },
     async (req, res) => {
       const { id } = req.valid("param");
       const data = req.valid("body");
@@ -1204,12 +1205,14 @@ export default defineRoutes((app) => {
   // DELETE /users/:id
   app.delete(
     "/:id",
-    requireAuth({
+    {
       validate: {
         param: { id: "string:1-" },
       },
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
       docs: { summary: "Delete user" },
-    }),
+    },
     async (req, res) => {
       const { id } = req.valid("param");
       await app.services.user.delete(id);
@@ -1242,13 +1245,30 @@ export default defineRoutes((app) => {
 
 ### The routing file must be default export
 
+Build-time consumers accept a finite default-export grammar. `defineRoutes`
+must be a named import from `vextjs` (an import alias is allowed), and the
+factory must be an inline synchronous arrow or function expression:
+
 ```typescript
-// ✅ Correct
+import { defineRoutes, defineRoutes as routes } from "vextjs";
+
+// ✅ Direct default export
 export default defineRoutes((app) => { ... });
 
-// ❌ Error — router-loader not recognized
-export const routes = defineRoutes((app) => { ... });
+// ✅ Alias plus inline function expression
+export default routes(function (app) { ... });
+
+// ✅ Same-file top-level binding
+const routeDefinition = defineRoutes((app) => { ... });
+export { routeDefinition as default };
+
+// ❌ Named-only definitions are not route-file identity
+export const ignored = defineRoutes((app) => { ... });
 ```
+
+Re-exports, imported route definitions, property/namespace callees, callback
+identifiers, and files without a supported default export fail with the route
+file in the diagnostic.
 
 ### Routing path normalization
 

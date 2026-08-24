@@ -113,11 +113,12 @@ simplest supported form:
 app.get("/article/:slug", { frontend: { hydration: "none" } }, handler);
 ```
 
-The finite static grammar also accepts same-file `const` objects, TypeScript
-static wrappers, and a helper call whose first argument is a projectable
-options object. The helper body, imported values, computed expressions, and
-interpolated templates are not executed. An unprojectable path or indexed
-schema fails with route context rather than being silently omitted. Keep
+The finite static grammar also accepts same-file `const` objects and TypeScript
+static wrappers. A route options helper call is rejected because its body and
+final contract cannot be evaluated safely; inline the final object or pass a
+same-file `const`. Imported values, computed expressions, and interpolated
+templates are not executed. An unprojectable path or indexed schema fails with
+route context rather than being silently omitted. Keep
 request-dependent page metadata in `res.render(..., { seo })`.
 
 ## Avoid Mismatch

@@ -78,15 +78,7 @@ export default class UserService {
 
 ```typescript
 // src/routes/users.ts
-import { defineRoutes, type RouteOptions } from "vextjs";
-
-function requireAuth(options: RouteOptions): RouteOptions {
-  return {
-    ...options,
-    middlewares: ["auth"],
-    auth: { required: true, security: "bearerAuth" },
-  };
-}
+import { defineRoutes } from "vextjs";
 
 export default defineRoutes((app) => {
   app.get("/", async (_req, res) => {
@@ -110,11 +102,13 @@ export default defineRoutes((app) => {
 
   app.post(
     "/",
-    requireAuth({
+    {
       validate: {
         body: { name: "string:1-50!", email: "email!" },
       },
-    }),
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
+    },
     async (req, res) => {
       const data = req.valid("body");
       const user = await app.services.user.create(data);

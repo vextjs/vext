@@ -9,6 +9,8 @@ import {
 import { detectRouteSourceDocsKind } from "../../lib/openapi/route-docs-kind.js";
 import { SchemaConverter } from "../../lib/openapi/schema-converter.js";
 import type { VextOpenAPIDocsKind } from "../../lib/openapi/types.js";
+import { schemaAdapter } from "../../lib/schema-adapter.js";
+import type { DslBuilder } from "../../lib/schema-adapter.js";
 import {
   createDigest,
   createRouteFreshnessIdentity,
@@ -40,6 +42,7 @@ const HTTP_METHODS = [
 ];
 
 const schemaConverter = new SchemaConverter();
+const NO_CANONICAL_FIELD_BUILDER = Symbol("no-canonical-field-builder");
 
 interface StaticRouteResponseDefinition {
   status: string;
@@ -48,9 +51,20 @@ interface StaticRouteResponseDefinition {
   schema?: Record<string, unknown> | string;
 }
 
-interface StaticScanContext {
+interface ConstBindingContext {
   bindings: ReadonlyMap<string, string>;
   ambiguousBindings: ReadonlySet<string>;
+}
+
+interface StaticScanContext extends ConstBindingContext {
+  schemaAdapterBindings: ReadonlySet<string>;
+}
+
+interface RouteModuleContext {
+  defineRoutesBindings: ReadonlySet<string>;
+  topLevelBindings: ReadonlyMap<string, string>;
+  ambiguousTopLevelBindings: ReadonlySet<string>;
+  defaultExportExpression: string;
 }
 
 interface RouteProjectionContext {
@@ -115,7 +129,9 @@ function scanRouteEntries(
   const entries: RouteIndexEntry[] = [];
   const staticContext = collectConstBindings(source);
 
-  for (const block of findDefineRoutesBlocks(source)) {
+  for (const block of [
+    findDefaultExportedDefineRoutesBlock(source, fileRelativePath),
+  ]) {
     const methodPattern = new RegExp(
       `(?<![\\w$.])${escapeRegExp(block.paramName)}\\.(${HTTP_METHODS.join("|")})\\s*\\(`,
       "gu",
@@ -164,7 +180,6 @@ function scanRouteEntries(
               staticContext,
               context,
               "route options",
-              true,
             )
           : undefined;
 
@@ -233,26 +248,324 @@ function readRouteFrontend(
   return parsed as VextRouteFrontendOptions;
 }
 
-function findDefineRoutesBlocks(source: string): DefineRoutesBlock[] {
-  const blocks: DefineRoutesBlock[] = [];
+function findDefaultExportedDefineRoutesBlock(
+  source: string,
+  fileRelativePath: string,
+): DefineRoutesBlock {
   const masked = createLexicalMask(source);
-  const pattern =
-    /(?<![\w$.])defineRoutes\s*\(\s*(?:async\s*)?(?:\(\s*([A-Za-z_$][\w$]*)(?:\s*:[^)]*)?\s*\)|([A-Za-z_$][\w$]*))\s*=>\s*\{/gu;
+  const moduleContext = collectRouteModuleContext(
+    source,
+    masked,
+    fileRelativePath,
+  );
+  const routeDefinitionExpression = resolveTopLevelRouteExpression(
+    moduleContext.defaultExportExpression,
+    moduleContext,
+    fileRelativePath,
+  );
+  return parseDefineRoutesCall(
+    routeDefinitionExpression,
+    moduleContext.defineRoutesBindings,
+    fileRelativePath,
+  );
+}
 
-  for (const match of masked.matchAll(pattern)) {
+function collectRouteModuleContext(
+  source: string,
+  masked: string,
+  fileRelativePath: string,
+): RouteModuleContext {
+  const defineRoutesBindings = collectDefineRoutesImportBindings(
+    source,
+    masked,
+  );
+  if (defineRoutesBindings.size === 0) {
+    throw routeModuleError(
+      fileRelativePath,
+      'must import { defineRoutes } (optionally aliased) from "vextjs"',
+    );
+  }
+
+  const { bindings, ambiguousBindings } = collectTopLevelConstBindings(
+    source,
+    masked,
+  );
+  return {
+    defineRoutesBindings,
+    topLevelBindings: bindings,
+    ambiguousTopLevelBindings: ambiguousBindings,
+    defaultExportExpression: readDefaultExportExpression(
+      source,
+      masked,
+      fileRelativePath,
+    ),
+  };
+}
+
+function collectDefineRoutesImportBindings(
+  source: string,
+  masked: string,
+): ReadonlySet<string> {
+  return collectFrameworkNamedImportBindings(source, masked, "defineRoutes");
+}
+
+function collectSchemaAdapterImportBindings(
+  source: string,
+  masked: string,
+): ReadonlySet<string> {
+  return collectFrameworkNamedImportBindings(source, masked, "schemaAdapter");
+}
+
+function collectFrameworkNamedImportBindings(
+  source: string,
+  masked: string,
+  importedName: "defineRoutes" | "schemaAdapter",
+): ReadonlySet<string> {
+  const bindings = new Set<string>();
+  const importPattern = /\bimport\s+(type\s+)?\{/gu;
+
+  for (const match of masked.matchAll(importPattern)) {
+    if (match[1] || !isTopLevelAt(masked, match.index!)) continue;
     const openBrace = match.index! + match[0].lastIndexOf("{");
     const closeBrace = findMatchingIndex(masked, openBrace, "{", "}");
-    const paramName = match[1] ?? match[2];
-    if (closeBrace >= 0 && paramName) {
-      blocks.push({
-        paramName,
-        body: source.slice(openBrace + 1, closeBrace),
-        maskedBody: masked.slice(openBrace + 1, closeBrace),
-      });
+    if (closeBrace < 0) continue;
+    const declarationEnd = findStaticExpressionEnd(masked, closeBrace + 1);
+    const declarationTail = source.slice(closeBrace + 1, declarationEnd).trim();
+    const moduleMatch = /^from\s+(["'])([^"']+)\1/u.exec(declarationTail);
+    if (moduleMatch?.[2] !== "vextjs") continue;
+
+    for (const rawSpecifier of splitTopLevelArgs(
+      source.slice(openBrace + 1, closeBrace),
+    )) {
+      const specifier = rawSpecifier.trim();
+      if (specifier.startsWith("type ")) continue;
+      const namedImport =
+        /^([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?$/u.exec(specifier);
+      if (namedImport?.[1] === importedName) {
+        bindings.add(namedImport[2] ?? importedName);
+      }
     }
   }
 
-  return blocks;
+  return bindings;
+}
+
+function collectTopLevelConstBindings(
+  source: string,
+  masked: string,
+): ConstBindingContext {
+  const bindings = new Map<string, string>();
+  const ambiguousBindings = new Set<string>();
+  const pattern = /\bconst\s+([A-Za-z_$][\w$]*)\s*=/gu;
+
+  for (const match of masked.matchAll(pattern)) {
+    if (!isTopLevelAt(masked, match.index!)) continue;
+    const name = match[1]!;
+    const start = match.index! + match[0].length;
+    const end = findStaticExpressionEnd(masked, start);
+    const expression = source.slice(start, end).trim();
+    if (!expression || ambiguousBindings.has(name)) continue;
+    if (bindings.has(name)) {
+      bindings.delete(name);
+      ambiguousBindings.add(name);
+      continue;
+    }
+    bindings.set(name, expression);
+  }
+
+  return { bindings, ambiguousBindings };
+}
+
+function readDefaultExportExpression(
+  source: string,
+  masked: string,
+  fileRelativePath: string,
+): string {
+  const candidates: string[] = [];
+  const directPattern = /\bexport\s+default\b/gu;
+  for (const match of masked.matchAll(directPattern)) {
+    if (!isTopLevelAt(masked, match.index!)) continue;
+    const start = match.index! + match[0].length;
+    const end = findStaticExpressionEnd(masked, start);
+    const expression = source.slice(start, end).trim();
+    if (!expression) {
+      throw routeModuleError(fileRelativePath, "has an empty default export");
+    }
+    candidates.push(expression);
+  }
+
+  const namedPattern = /\bexport\s*\{/gu;
+  for (const match of masked.matchAll(namedPattern)) {
+    if (!isTopLevelAt(masked, match.index!)) continue;
+    const openBrace = match.index! + match[0].lastIndexOf("{");
+    const closeBrace = findMatchingIndex(masked, openBrace, "{", "}");
+    if (closeBrace < 0) continue;
+    const statementEnd = findStaticExpressionEnd(masked, closeBrace + 1);
+    const isReExport = /^\s*from\b/u.test(
+      source.slice(closeBrace + 1, statementEnd),
+    );
+
+    for (const rawSpecifier of splitTopLevelArgs(
+      source.slice(openBrace + 1, closeBrace),
+    )) {
+      const specifier = rawSpecifier.trim().replace(/^type\s+/u, "");
+      const defaultSpecifier = /^([A-Za-z_$][\w$]*)\s+as\s+default$/u.exec(
+        specifier,
+      );
+      if (!defaultSpecifier && specifier !== "default") continue;
+      if (isReExport) {
+        throw routeModuleError(
+          fileRelativePath,
+          "must not re-export its default route definition from another module",
+        );
+      }
+      candidates.push(defaultSpecifier?.[1] ?? "default");
+    }
+  }
+
+  if (candidates.length === 0) {
+    throw routeModuleError(
+      fileRelativePath,
+      "must default-export its defineRoutes(...) result",
+    );
+  }
+  if (candidates.length > 1) {
+    throw routeModuleError(
+      fileRelativePath,
+      "must have exactly one statically projectable default export",
+    );
+  }
+  return candidates[0]!;
+}
+
+function resolveTopLevelRouteExpression(
+  value: string,
+  moduleContext: RouteModuleContext,
+  fileRelativePath: string,
+  resolving: ReadonlySet<string> = new Set(),
+): string {
+  const expression = stripStaticSyntax(value);
+  if (!/^[A-Za-z_$][\w$]*$/u.test(expression)) return expression;
+  if (moduleContext.ambiguousTopLevelBindings.has(expression)) {
+    throw routeModuleError(
+      fileRelativePath,
+      `default route binding "${expression}" is ambiguous`,
+    );
+  }
+  const binding = moduleContext.topLevelBindings.get(expression);
+  if (binding === undefined) return expression;
+  if (resolving.has(expression)) {
+    throw routeModuleError(
+      fileRelativePath,
+      `default route binding "${expression}" is circular`,
+    );
+  }
+  const next = new Set(resolving);
+  next.add(expression);
+  return resolveTopLevelRouteExpression(
+    binding,
+    moduleContext,
+    fileRelativePath,
+    next,
+  );
+}
+
+function parseDefineRoutesCall(
+  value: string,
+  defineRoutesBindings: ReadonlySet<string>,
+  fileRelativePath: string,
+): DefineRoutesBlock {
+  const expression = stripStaticSyntax(value);
+  const masked = createLexicalMask(expression);
+  const call = /^([A-Za-z_$][\w$]*)\s*\(/u.exec(masked);
+  const callee = call?.[1];
+  if (!call || !callee || !defineRoutesBindings.has(callee)) {
+    throw routeModuleError(
+      fileRelativePath,
+      "default export must be a local defineRoutes(...) call or a top-level const bound to one",
+    );
+  }
+  const openParen = masked.indexOf("(", call.index);
+  const closeParen = findMatchingIndex(masked, openParen, "(", ")");
+  if (closeParen < 0 || closeParen !== masked.trimEnd().length - 1) {
+    throw routeModuleError(
+      fileRelativePath,
+      "default defineRoutes(...) call must be balanced and direct",
+    );
+  }
+  const args = splitTopLevelArgs(expression.slice(openParen + 1, closeParen));
+  if (args.length !== 1 || !args[0]) {
+    throw routeModuleError(
+      fileRelativePath,
+      "defineRoutes(...) must receive exactly one inline synchronous factory",
+    );
+  }
+  return parseInlineRouteFactory(args[0], fileRelativePath);
+}
+
+function parseInlineRouteFactory(
+  value: string,
+  fileRelativePath: string,
+): DefineRoutesBlock {
+  const factory = stripStaticSyntax(value);
+  const masked = createLexicalMask(factory);
+  if (/^async\b/u.test(masked)) {
+    throw routeModuleError(
+      fileRelativePath,
+      "defineRoutes factory must be synchronous; async factories are not supported",
+    );
+  }
+
+  const arrow =
+    /^(?:\(\s*([A-Za-z_$][\w$]*)(?:\s*:[^)]*)?\s*\)|([A-Za-z_$][\w$]*))\s*(?::\s*void\s*)?=>\s*\{/u.exec(
+      masked,
+    );
+  const functionExpression =
+    /^function(?:\s+[A-Za-z_$][\w$]*)?\s*\(\s*([A-Za-z_$][\w$]*)(?:\s*:[^)]*)?\s*\)\s*(?::\s*void\s*)?\{/u.exec(
+      masked,
+    );
+  const match = arrow ?? functionExpression;
+  const paramName = arrow ? (arrow[1] ?? arrow[2]) : functionExpression?.[1];
+  if (!match || !paramName) {
+    throw routeModuleError(
+      fileRelativePath,
+      "defineRoutes(...) requires an inline arrow or function expression with one app parameter",
+    );
+  }
+
+  const openBrace = match[0].lastIndexOf("{");
+  const closeBrace = findMatchingIndex(masked, openBrace, "{", "}");
+  if (closeBrace < 0 || closeBrace !== masked.trimEnd().length - 1) {
+    throw routeModuleError(
+      fileRelativePath,
+      "defineRoutes factory body must be a balanced direct block",
+    );
+  }
+  return {
+    paramName,
+    body: factory.slice(openBrace + 1, closeBrace),
+    maskedBody: masked.slice(openBrace + 1, closeBrace),
+  };
+}
+
+function isTopLevelAt(masked: string, targetIndex: number): boolean {
+  let braces = 0;
+  let parentheses = 0;
+  let brackets = 0;
+  for (let index = 0; index < targetIndex; index++) {
+    const char = masked[index]!;
+    if (char === "{") braces++;
+    else if (char === "}") braces--;
+    else if (char === "(") parentheses++;
+    else if (char === ")") parentheses--;
+    else if (char === "[") brackets++;
+    else if (char === "]") brackets--;
+  }
+  return braces === 0 && parentheses === 0 && brackets === 0;
+}
+
+function routeModuleError(fileRelativePath: string, message: string): Error {
+  return new Error(`[vextjs] ${fileRelativePath} ${message}.`);
 }
 
 function assertDirectRouteRegistration(
@@ -653,14 +966,18 @@ function parseStaticSchemaValue(
   label: string,
 ): unknown {
   if (!value) return undefined;
-  const resolved = resolveStaticExpressionSource(
-    value,
-    staticContext,
-    label,
-    false,
-  );
+  const resolved = resolveStaticExpressionSource(value, staticContext, label);
   const string = readStringLiteral(resolved);
   if (string !== null) return string;
+
+  const canonicalBuilder = projectCanonicalFieldBuilder(
+    resolved,
+    staticContext,
+    label,
+  );
+  if (canonicalBuilder !== NO_CANONICAL_FIELD_BUILDER) {
+    return canonicalBuilder;
+  }
 
   const trimmed = stripStaticSyntax(resolved);
   if (trimmed === "true") return true;
@@ -675,7 +992,111 @@ function parseStaticSchemaValue(
   if (trimmed.startsWith("[")) {
     return parseStaticSchemaArray(trimmed, staticContext, label);
   }
-  return undefined;
+  throw new Error(
+    `[vextjs] ${label} must be statically resolvable. ` +
+      "Use literals, same-file const values, or schemaAdapter.compileField(<static string>) " +
+      "with one optional .description(<static string>); opaque/imported schema objects and other call chains are not supported.",
+  );
+}
+
+function projectCanonicalFieldBuilder(
+  value: string,
+  staticContext: StaticScanContext,
+  label: string,
+): DslBuilder | typeof NO_CANONICAL_FIELD_BUILDER {
+  const expression = stripStaticSyntax(value);
+  const masked = createLexicalMask(expression);
+  const receiver = /^([A-Za-z_$][\w$]*)\b/u.exec(masked)?.[1];
+  if (!receiver || !staticContext.schemaAdapterBindings.has(receiver)) {
+    return NO_CANONICAL_FIELD_BUILDER;
+  }
+
+  const compileCall = /^([A-Za-z_$][\w$]*)\s*\.\s*compileField\s*\(/u.exec(
+    masked,
+  );
+  if (!compileCall) {
+    throw new Error(
+      `[vextjs] ${label} uses an unsupported schemaAdapter expression. ` +
+        "Only compileField(<static string>) with one optional .description(<static string>) is projectable.",
+    );
+  }
+  const openParen = masked.indexOf("(", compileCall.index);
+  const closeParen = findMatchingIndex(masked, openParen, "(", ")");
+  if (closeParen < 0) {
+    throw new Error(
+      `[vextjs] ${label} schemaAdapter.compileField(...) call is not balanced.`,
+    );
+  }
+  const definition = readCanonicalBuilderStringArgument(
+    expression.slice(openParen + 1, closeParen),
+    staticContext,
+    `${label} schemaAdapter.compileField(...)`,
+  );
+
+  const tail = expression.slice(closeParen + 1).trim();
+  let description: string | undefined;
+  if (tail) {
+    const maskedTail = createLexicalMask(tail);
+    const descriptionCall = /^\.\s*description\s*\(/u.exec(maskedTail);
+    if (!descriptionCall) {
+      throw new Error(
+        `[vextjs] ${label} uses an unsupported schemaAdapter call chain. ` +
+          "Only one optional .description(<static string>) is projectable.",
+      );
+    }
+    const descriptionOpen = maskedTail.indexOf("(", descriptionCall.index);
+    const descriptionClose = findMatchingIndex(
+      maskedTail,
+      descriptionOpen,
+      "(",
+      ")",
+    );
+    if (
+      descriptionClose < 0 ||
+      descriptionClose !== maskedTail.trimEnd().length - 1
+    ) {
+      throw new Error(
+        `[vextjs] ${label} uses an unsupported schemaAdapter call chain. ` +
+          "Only one optional .description(<static string>) is projectable.",
+      );
+    }
+    description = readCanonicalBuilderStringArgument(
+      tail.slice(descriptionOpen + 1, descriptionClose),
+      staticContext,
+      `${label} schemaAdapter.description(...)`,
+    );
+  }
+
+  try {
+    const builder = schemaAdapter.compileField(definition);
+    return description === undefined
+      ? builder
+      : builder.description(description);
+  } catch (error) {
+    throw new Error(
+      `[vextjs] ${label} canonical schemaAdapter builder failed: ${error instanceof Error ? error.message : String(error)}.`,
+    );
+  }
+}
+
+function readCanonicalBuilderStringArgument(
+  argsText: string,
+  staticContext: StaticScanContext,
+  label: string,
+): string {
+  const args = splitTopLevelArgs(argsText);
+  if (args.length === 1 && args[0]) {
+    const resolved = resolveStaticExpressionSource(
+      args[0],
+      staticContext,
+      label,
+    );
+    const string = readStringLiteral(resolved);
+    if (string !== null) return string;
+  }
+  throw new Error(
+    `[vextjs] ${label} requires exactly one statically resolvable string argument.`,
+  );
 }
 
 function parseStaticSchemaObject(
@@ -747,7 +1168,6 @@ function readStaticObjectExpression(
   staticContext: StaticScanContext,
   context: RouteProjectionContext,
   label: string,
-  allowHelperWrapper = false,
 ): string {
   if (value === undefined) {
     throw projectionError(context, `${label} is missing`);
@@ -757,13 +1177,22 @@ function readStaticObjectExpression(
       value,
       staticContext,
       `${formatProjectionContext(context)} ${label}`,
-      allowHelperWrapper,
     ),
   );
   const object = resolved.startsWith("{")
     ? readBalanced(resolved, 0, "{", "}")
     : null;
   if (!object || object.length !== resolved.length) {
+    if (
+      /^(?:[A-Za-z_$][\w$]*\s*\.\s*)*[A-Za-z_$][\w$]*\s*\(/u.test(
+        createLexicalMask(resolved),
+      )
+    ) {
+      throw projectionError(
+        context,
+        `${label} helper calls are not statically projectable; inline the helper's final object literal or pass a same-file const containing that final object`,
+      );
+    }
     throw projectionError(
       context,
       `${label} must be statically resolvable to an object literal`,
@@ -806,7 +1235,6 @@ function readStaticStringExpression(
       value,
       staticContext,
       `${formatProjectionContext(context)} ${failureMessage}`,
-      false,
     );
     const string = readStringLiteral(resolved);
     if (string !== null) return string;
@@ -884,9 +1312,8 @@ function readStaticBooleanProperty(
 
 function resolveStaticExpressionSource(
   value: string,
-  staticContext: StaticScanContext,
+  staticContext: ConstBindingContext,
   label: string,
-  allowHelperWrapper: boolean,
   resolving = new Set<string>(),
 ): string {
   const expression = stripStaticSyntax(value);
@@ -903,39 +1330,7 @@ function resolveStaticExpressionSource(
     }
     const next = new Set(resolving);
     next.add(expression);
-    return resolveStaticExpressionSource(
-      binding,
-      staticContext,
-      label,
-      allowHelperWrapper,
-      next,
-    );
-  }
-
-  if (allowHelperWrapper) {
-    const masked = createLexicalMask(expression);
-    const call = /^(?:[A-Za-z_$][\w$]*\.)*[A-Za-z_$][\w$]*\s*\(/u.exec(masked);
-    if (call) {
-      const openParen = masked.indexOf("(", call.index);
-      const closeParen = findMatchingIndex(masked, openParen, "(", ")");
-      if (closeParen === masked.trimEnd().length - 1) {
-        const [first] = splitTopLevelArgs(
-          expression.slice(openParen + 1, closeParen),
-        );
-        if (!first) {
-          throw new Error(
-            `[vextjs] ${label} helper wrapper must receive a statically resolvable options object as its first argument.`,
-          );
-        }
-        return resolveStaticExpressionSource(
-          first,
-          staticContext,
-          label,
-          true,
-          resolving,
-        );
-      }
-    }
+    return resolveStaticExpressionSource(binding, staticContext, label, next);
   }
 
   return expression;
@@ -987,7 +1382,12 @@ function collectConstBindings(source: string): StaticScanContext {
     }
     bindings.set(name, expression);
   }
-  return { bindings, ambiguousBindings };
+  const schemaAdapterBindings = new Set(
+    [...collectSchemaAdapterImportBindings(source, masked)].filter(
+      (name) => !bindings.has(name) && !ambiguousBindings.has(name),
+    ),
+  );
+  return { bindings, ambiguousBindings, schemaAdapterBindings };
 }
 
 function findStaticExpressionEnd(masked: string, start: number): number {
@@ -1002,7 +1402,12 @@ function findStaticExpressionEnd(masked: string, start: number): number {
       return index;
     } else if ((char === "\n" || char === "\r") && depth === 0) {
       const current = masked.slice(start, index).trim();
-      if (current) return index;
+      if (current) {
+        let next = index + 1;
+        while (next < masked.length && /\s/u.test(masked[next]!)) next++;
+        if (masked[next] === ".") continue;
+        return index;
+      }
     }
   }
   return masked.length;

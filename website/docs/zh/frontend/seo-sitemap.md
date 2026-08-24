@@ -39,7 +39,7 @@ export default config;
 
 ## 页面级元数据
 
-静态且 JSON-safe 的元数据放在既有路由声明上。有限静态语法以内联对象为最简单形式，也接受同文件 `const` 绑定、TypeScript 静态包装，以及第一参数可静态投影的 helper 调用。索引不会执行 helper 函数体、导入值、计算表达式或带插值的模板字符串：
+静态且 JSON-safe 的元数据放在既有路由声明上。有限静态语法以内联对象为最简单形式，也接受同文件 `const` 绑定与 TypeScript 静态包装。route options helper 调用会被拒绝，因为索引不会执行 helper 函数体，无法确认最终元数据。请内联最终对象，或直接传入保存最终对象的同文件 `const`。索引也不会执行导入值、计算表达式或带插值的模板字符串：
 
 ```ts
 app.get(

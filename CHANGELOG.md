@@ -41,13 +41,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and cookie validation failures remain HTTP 422.
 - OpenAPI Docs now shares Vext brand geometry, favicon, teal/cyan light/dark
   tokens, and green/amber mark accents with the frontend.
+- Build-indexed route modules now bind a named `defineRoutes` import from
+  `vextjs` to a finite set of default-export forms. Import aliases, inline
+  synchronous factories, and same-file top-level route-definition bindings are accepted;
+  re-exports, imported factories, callback identifiers, property callees, and
+  unused phantom `defineRoutes` calls are rejected or ignored as appropriate.
 - Build-indexed route metadata now follows a finite static grammar: literals,
-  same-file `const` bindings, TypeScript static wrappers, and a helper call's
-  statically projectable first argument are accepted. Dynamic paths and
-  request/response schema expressions, conditional registration, and nested
-  registration fail with route context instead of being silently omitted or
-  projected as phantom routes; request-dependent SEO remains supported through
-  `res.render(..., { seo })`.
+  same-file `const` bindings, TypeScript static wrappers, and canonical
+  `schemaAdapter.compileField(<static string>)` builders are accepted. Route
+  options helper calls, opaque schema objects, dynamic paths or schemas,
+  conditional registration, and nested registration fail with route context;
+  request-dependent SEO remains supported through `res.render(..., { seo })`.
 - Fastify handlers now retain reply ownership until a delayed SSR stream sends,
   preventing React streaming responses from being finalized as an empty body.
 - New TypeScript scaffolds declare `@types/node` and run
@@ -57,6 +61,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Fixed
 
+- `defineRoutes()` now enforces a synchronous factory at the type and runtime
+  boundaries. Native async factories fail before execution, and custom
+  thenables fail transactionally without leaving partially registered routes or
+  clearing the route helper methods.
 - SEO artifact output containment now treats POSIX and Windows separators,
   drive paths, UNC paths, and traversal segments consistently on every host.
 - Ordinary `main` CI now distinguishes the unpublished 2.0.0 docs preview from

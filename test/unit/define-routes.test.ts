@@ -4,6 +4,7 @@ import {
   executeRouteFactory,
 } from "../../src/lib/define-routes.js";
 import type { VextApp } from "../../src/types/app.js";
+import type { RouteFactory } from "../../src/types/route.js";
 
 function createMinimalApp(): VextApp {
   return {
@@ -18,10 +19,47 @@ function createMinimalApp(): VextApp {
 }
 
 describe("defineRoutes runtime boundary", () => {
+  if (false) {
+    // @ts-expect-error Route factories must be synchronous.
+    defineRoutes(async (_app) => undefined);
+  }
+
   it("rejects a non-function factory at the public boundary", () => {
     expect(() => defineRoutes(null as never)).toThrow(
       "[vextjs] defineRoutes(factory) expects a function.",
     );
+  });
+
+  it("rejects native async factories before executing their body", () => {
+    let executed = false;
+    const factory = (async () => {
+      executed = true;
+    }) as unknown as RouteFactory;
+
+    expect(() => defineRoutes(factory)).toThrow(
+      "defineRoutes(factory) requires a synchronous factory",
+    );
+    expect(executed).toBe(false);
+  });
+
+  it("rejects thenable results transactionally and restores HTTP methods", () => {
+    const app = createMinimalApp();
+    const originalGet = () => {
+      throw new Error("placeholder get");
+    };
+    (app as unknown as Record<string, unknown>).get = originalGet;
+
+    const factory = ((routeApp: VextApp) => {
+      routeApp.get("/partial", async () => undefined);
+      return Promise.resolve();
+    }) as unknown as RouteFactory;
+    const routeDef = defineRoutes(factory);
+
+    expect(() => executeRouteFactory(routeDef, app)).toThrow(
+      "defineRoutes(factory) requires a synchronous factory",
+    );
+    expect(routeDef.routes).toEqual([]);
+    expect((app as unknown as Record<string, unknown>).get).toBe(originalGet);
   });
 
   it("rejects invalid collector path, options, and handler inputs with Vext errors", () => {

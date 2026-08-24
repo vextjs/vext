@@ -142,22 +142,9 @@ export default defineMiddleware(
 );
 ```
 
-### 可复用路由保护 helper
+### 可静态投影的受保护路由
 
-把路由级认证形状集中到一个 helper 里，不要在每条受保护路由上复制 `middlewares: ["auth"]` 和 `auth: true`：
-
-```typescript
-// src/auth/route-guards.ts
-import type { RouteOptions } from "vextjs";
-
-export function requireAuth(options: RouteOptions): RouteOptions {
-  return {
-    ...options,
-    middlewares: ["auth"],
-    auth: { required: true, security: "bearerAuth" },
-  };
-}
-```
+构建索引、Doctor 与 OpenAPI 生成会在不执行路由模块的前提下读取 route options。请把最终认证形状写在内联 options 对象中，或写在同文件并直接传给单个路由调用的 `const` 中。有限静态语法会拒绝包裹 options 的 helper 调用，所以下面的受保护路由会显式内联 `middlewares` 与 `auth`。
 
 ## 4. 服务层
 
@@ -401,7 +388,6 @@ export default defineRoutes((app) => {
 ```typescript
 // src/routes/users.ts
 import { defineRoutes } from "vextjs";
-import { requireAuth } from "../auth/route-guards";
 
 export default defineRoutes((app) => {
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -482,7 +468,7 @@ export default defineRoutes((app) => {
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   app.post(
     "/",
-    requireAuth({
+    {
       validate: {
         body: {
           name: "string:1-50", // 必填，长度 1-50
@@ -511,7 +497,9 @@ export default defineRoutes((app) => {
           409: { description: "邮箱已注册" },
         },
       },
-    }),
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
+    },
     async (req, res) => {
       const body = req.valid("body");
 
@@ -530,7 +518,7 @@ export default defineRoutes((app) => {
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   app.put(
     "/:id",
-    requireAuth({
+    {
       validate: {
         param: { id: "string:1-" },
         body: {
@@ -551,7 +539,9 @@ export default defineRoutes((app) => {
           409: { description: "邮箱已被其他用户使用" },
         },
       },
-    }),
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
+    },
     async (req, res) => {
       const { id } = req.valid("param");
       const body = req.valid("body");
@@ -571,7 +561,7 @@ export default defineRoutes((app) => {
   // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   app.delete(
     "/:id",
-    requireAuth({
+    {
       validate: {
         param: { id: "string:1-" },
       },
@@ -584,7 +574,9 @@ export default defineRoutes((app) => {
           404: { description: "用户不存在" },
         },
       },
-    }),
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
+    },
     async (req, res) => {
       const { id } = req.valid("param");
 

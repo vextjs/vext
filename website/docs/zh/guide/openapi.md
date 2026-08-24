@@ -482,25 +482,16 @@ export default {
 };
 ```
 
-```typescript
-// src/auth/route-guards.ts
-import type { RouteOptions } from "vextjs";
-
-export function requireAuth(options: RouteOptions): RouteOptions {
-  return {
-    ...options,
-    middlewares: ["auth"],
-    auth: { required: true, security: "bearerAuth" },
-  };
-}
-```
+路由元数据会在不执行路由模块的前提下完成静态投影。请把认证字段保留在最终内联 options 对象中，或保留在同文件并直接传给路由调用的 `const` 中；有限静态语法会拒绝 options helper 调用。
 
 ```typescript
 app.get(
   "/profile",
-  requireAuth({
+  {
+    middlewares: ["auth"],
+    auth: { required: true, security: "bearerAuth" },
     docs: { summary: "获取当前用户" },
-  }),
+  },
   handler,
 );
 ```
@@ -1543,21 +1534,13 @@ export default {
 
 ```typescript
 // src/routes/orders.ts
-import { defineRoutes, type RouteOptions } from "vextjs";
-
-function requireAuth(options: RouteOptions): RouteOptions {
-  return {
-    ...options,
-    middlewares: ["auth"],
-    auth: { required: true, security: "bearerAuth" },
-  };
-}
+import { defineRoutes } from "vextjs";
 
 export default defineRoutes((app) => {
   // 获取订单列表
   app.get(
     "/",
-    requireAuth({
+    {
       validate: {
         query: {
           page: "number:1-",
@@ -1582,7 +1565,9 @@ export default defineRoutes((app) => {
           },
         },
       },
-    }),
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
+    },
     async (req, res) => {
       const filters = req.valid("query");
       const orders = await app.services.order.findAll(filters);
@@ -1593,7 +1578,7 @@ export default defineRoutes((app) => {
   // 创建订单
   app.post(
     "/",
-    requireAuth({
+    {
       validate: {
         body: {
           productId: "string!",
@@ -1617,7 +1602,9 @@ export default defineRoutes((app) => {
           401: { description: "未认证" },
         },
       },
-    }),
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
+    },
     async (req, res) => {
       const data = req.valid("body");
       const order = await app.services.order.create(data);
@@ -1628,7 +1615,7 @@ export default defineRoutes((app) => {
   // 取消订单
   app.post(
     "/:id/cancel",
-    requireAuth({
+    {
       validate: {
         param: { id: "string!" },
         body: { reason: "string:1-500?" },
@@ -1641,7 +1628,9 @@ export default defineRoutes((app) => {
           404: { description: "订单不存在" },
         },
       },
-    }),
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
+    },
     async (req, res) => {
       const { id } = req.valid("param");
       const { reason } = req.valid("body");

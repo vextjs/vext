@@ -379,26 +379,18 @@ app.get(
 `partitionKey` 是缓存分区。它不会改变业务响应，只会让底层缓存 key 按用户、租户、区域等维度隔离。
 
 ```typescript
-import type { RouteOptions } from "vextjs";
-
-function requireAuth(options: RouteOptions): RouteOptions {
-  return {
-    ...options,
-    middlewares: ["auth"],
-    auth: { required: true, security: "bearerAuth" },
-  };
-}
-
 app.get(
   "/tenant/products",
-  requireAuth({
+  {
     cache: {
       ttl: 60_000,
       key: "tenant:products",
       partitionKey: (req) => req.headers["x-tenant-id"],
       tags: ["products"],
     },
-  }),
+    middlewares: ["auth"],
+    auth: { required: true, security: "bearerAuth" },
+  },
   handler,
 );
 ```
@@ -443,24 +435,28 @@ app.get(
 // 推荐：使用 partitionKey 做租户隔离
 app.get(
   "/my-orders",
-  requireAuth({
+  {
     cache: {
       ttl: 60_000,
       partitionKey: (req) => req.headers["x-user-id"],
     },
-  }),
+    middlewares: ["auth"],
+    auth: { required: true, security: "bearerAuth" },
+  },
   handler,
 );
 
 // 也可以：已认证用户不走缓存
 app.get(
   "/products",
-  requireAuth({
+  {
     cache: {
       ttl: 60_000,
       condition: (req) => !req.headers.authorization,
     },
-  }),
+    middlewares: ["auth"],
+    auth: { required: true, security: "bearerAuth" },
+  },
   handler,
 );
 ```

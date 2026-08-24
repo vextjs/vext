@@ -111,7 +111,7 @@ Vext 会在构建阶段读取每个路由的 hydration policy，并据此生成 
 app.get("/article/:slug", { frontend: { hydration: "none" } }, handler);
 ```
 
-有限静态语法也接受同文件 `const` 对象、TypeScript 静态包装，以及第一参数可投影的 helper 调用。索引不会执行 helper 函数体、导入值、计算表达式或带插值的模板字符串；无法投影的 path 或被索引 schema 会携带 route 上下文失败，而不是静默遗漏。依赖请求数据的动态页面元数据继续放在 `res.render(..., { seo })`。
+有限静态语法也接受同文件 `const` 对象与 TypeScript 静态包装。route options helper 调用会被拒绝，因为索引无法安全执行其函数体或确认最终合同；请内联最终对象，或直接传入保存最终对象的同文件 `const`。索引不会执行导入值、计算表达式或带插值的模板字符串；无法投影的 path 或被索引 schema 会携带 route 上下文失败，而不是静默遗漏。依赖请求数据的动态页面元数据继续放在 `res.render(..., { seo })`。
 
 ## 避免 Mismatch
 

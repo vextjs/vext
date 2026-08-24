@@ -407,6 +407,11 @@ app.post(
 
 生成的 OpenAPI schema 会保留这些 description，同时继续保留 `required`、`enum`、`minLength`、`maxLength` 等约束。没有手写 description 的字段仍会使用框架生成的兜底描述。
 
+构建期投影只识别从 `vextjs` named import 的 `schemaAdapter`（允许 alias）。有限
+builder 语法为 `compileField(<静态字符串>)`，可追加最多一次
+`.description(<静态字符串>)`；完整 builder 可保存为同文件无歧义 `const`。动态参数、
+其他 chain、导入的 builder 与不透明 Zod/Yup 对象都会携带 route 上下文失败。
+
 `?` 只表示字段可缺省，不会生成 `nullable: true`。需要显式允许 `null` 时，
 使用 `types:string|null` 或 raw `{ type: ["string", "null"] }`。
 
@@ -562,6 +567,16 @@ export default definePlugin({
   setup(app) {
     const originalValidator = app.getValidator();
 
+    // 把 Vext 可序列化的路由 schema 翻译到所选引擎。
+    // 这个应用级示例有意只支持一个小型子集。
+    const toZodField = (definition: unknown): z.ZodTypeAny | null => {
+      if (definition === "string!") return z.string().min(1);
+      if (definition === "string:1-50!") return z.string().min(1).max(50);
+      if (definition === "email!") return z.string().email();
+      if (definition === "string?") return z.string().optional();
+      return null;
+    };
+
     const zodValidator: VextValidator = {
       compile(schema) {
         const toVextResult = (result: ReturnType<z.ZodType["safeParse"]>) =>
@@ -575,26 +590,14 @@ export default definePlugin({
                 })),
               };
 
-        // 当整个 location schema 是 Zod schema 时使用 Zod 校验
-        if (schema instanceof z.ZodType) {
-          return (data) => toVextResult(schema.safeParse(data));
+        const zodShape: Record<string, z.ZodTypeAny> = {};
+        for (const [key, definition] of Object.entries(schema)) {
+          const field = toZodField(definition);
+          if (!field) return originalValidator.compile(schema);
+          zodShape[key] = field;
         }
-
-        // 当前 RouteOptions.validate 类型也支持字段级 Zod schema
-        const zodShape: Record<string, z.ZodType> = {};
-        for (const [key, value] of Object.entries(schema)) {
-          if (value instanceof z.ZodType) {
-            zodShape[key] = value;
-          }
-        }
-
-        if (Object.keys(zodShape).length > 0) {
-          const zodSchema = z.object(zodShape);
-          return (data) => toVextResult(zodSchema.safeParse(data));
-        }
-
-        // 否则退回默认 schema-dsl 行为
-        return originalValidator.compile(schema);
+        const zodSchema = z.object(zodShape);
+        return (data) => toVextResult(zodSchema.safeParse(data));
       },
     };
 
@@ -604,7 +607,11 @@ export default definePlugin({
 });
 ```
 
-替换后，路由中的 `validate` 可以传入字段级 Zod schema 对象而非 DSL 字符串。
+`app.setValidator()` 替换的是运行时编译引擎，不会改变静态 route-source 语法。路由声明
+仍必须使用可序列化的 Vext schema（DSL 字符串、嵌套字面量或 canonical
+`schemaAdapter` builder），由 adapter 在内部翻译到 Zod/Yup。不要把不透明的第三方
+schema 实例放入 `RouteOptions.validate`，因为 build、Doctor、OpenAPI 与 client contract
+必须在插件 setup 执行前完成路由投影。
 
 ## 常见模式
 

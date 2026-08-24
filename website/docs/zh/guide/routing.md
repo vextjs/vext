@@ -60,15 +60,7 @@ app.get("/health", async (_req, res) => {
 
 ```typescript
 // src/routes/users.ts
-import { defineRoutes, type RouteOptions } from "vextjs";
-
-function requireAuth(options: RouteOptions): RouteOptions {
-  return {
-    ...options,
-    middlewares: ["auth"],
-    auth: { required: true, security: "bearerAuth" },
-  };
-}
+import { defineRoutes } from "vextjs";
 
 export default defineRoutes((app) => {
   // GET /users
@@ -101,7 +93,7 @@ export default defineRoutes((app) => {
   // POST /users
   app.post(
     "/",
-    requireAuth({
+    {
       validate: {
         body: {
           name: "string:1-50!",
@@ -109,8 +101,10 @@ export default defineRoutes((app) => {
           age: "number?",
         },
       },
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
       docs: { summary: "创建用户" },
-    }),
+    },
     async (req, res) => {
       const data = req.valid("body");
       const user = await app.services.user.create(data);
@@ -121,13 +115,15 @@ export default defineRoutes((app) => {
   // PUT /users/:id
   app.put(
     "/:id",
-    requireAuth({
+    {
       validate: {
         param: { id: "string!" },
         body: { name: "string:1-50?", email: "email?" },
       },
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
       docs: { summary: "更新用户" },
-    }),
+    },
     async (req, res) => {
       const { id } = req.valid("param");
       const data = req.valid("body");
@@ -139,10 +135,12 @@ export default defineRoutes((app) => {
   // DELETE /users/:id
   app.delete(
     "/:id",
-    requireAuth({
+    {
       validate: { param: { id: "string!" } },
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
       docs: { summary: "删除用户" },
-    }),
+    },
     async (req, res) => {
       const { id } = req.valid("param");
       await app.services.user.delete(id);
@@ -691,15 +689,7 @@ src/routes/
 
 ```typescript
 // src/routes/posts.ts
-import { defineRoutes, type RouteOptions } from "vextjs";
-
-function requireAuth(options: RouteOptions): RouteOptions {
-  return {
-    ...options,
-    middlewares: ["auth"],
-    auth: { required: true, security: "bearerAuth" },
-  };
-}
+import { defineRoutes } from "vextjs";
 
 export default defineRoutes((app) => {
   // GET /posts — 分页列表
@@ -742,7 +732,7 @@ export default defineRoutes((app) => {
   // POST /posts — 创建文章（需要认证）
   app.post(
     "/",
-    requireAuth({
+    {
       validate: {
         body: {
           title: "string:1-200!",
@@ -750,6 +740,8 @@ export default defineRoutes((app) => {
           tags: "string?",
         },
       },
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
       docs: {
         summary: "创建文章",
         responses: {
@@ -757,7 +749,7 @@ export default defineRoutes((app) => {
           401: { description: "未认证" },
         },
       },
-    }),
+    },
     async (req, res) => {
       const data = req.valid("body");
       const post = await app.services.post.create({
@@ -771,7 +763,7 @@ export default defineRoutes((app) => {
   // PATCH /posts/:id — 更新文章
   app.patch(
     "/:id",
-    requireAuth({
+    {
       validate: {
         param: { id: "string!" },
         body: {
@@ -780,8 +772,10 @@ export default defineRoutes((app) => {
           status: "draft|published|archived",
         },
       },
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
       docs: { summary: "更新文章" },
-    }),
+    },
     async (req, res) => {
       const { id } = req.valid("param");
       const data = req.valid("body");
@@ -793,10 +787,12 @@ export default defineRoutes((app) => {
   // DELETE /posts/:id — 删除文章
   app.delete(
     "/:id",
-    requireAuth({
+    {
       validate: { param: { id: "string!" } },
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
       docs: { summary: "删除文章" },
-    }),
+    },
     async (req, res) => {
       const { id } = req.valid("param");
       await app.services.post.delete(id);

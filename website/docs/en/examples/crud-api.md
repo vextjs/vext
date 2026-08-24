@@ -152,22 +152,9 @@ export default defineMiddleware(
 );
 ```
 
-### Reusable route guard helper
+### Statically projectable protected routes
 
-Keep the route-level auth shape in one helper instead of copying `middlewares: ["auth"]` and `auth: true` into every protected route:
-
-```typescript
-// src/auth/route-guards.ts
-import type { RouteOptions } from "vextjs";
-
-export function requireAuth(options: RouteOptions): RouteOptions {
-  return {
-    ...options,
-    middlewares: ["auth"],
-    auth: { required: true, security: "bearerAuth" },
-  };
-}
-```
+Route options are consumed by build indexing, Doctor, and OpenAPI generation without executing route modules. Keep the final authentication shape in the inline options object, or in a same-file `const` passed directly to one route call. A helper call around the options object is rejected by the finite static grammar, so the protected routes below inline `middlewares` and `auth` explicitly.
 
 ## 4. Service layer
 
@@ -420,7 +407,6 @@ export default defineRoutes((app) => {
 ```typescript
 // src/routes/users.ts
 import { defineRoutes } from "vextjs";
-import { requireAuth } from "../auth/route-guards";
 
 export default defineRoutes((app) => {
   // ━━━━━━━━━━━━━━━━━━━━ ━━━━━━━━━━━━━━━━━━━━━
@@ -502,7 +488,7 @@ export default defineRoutes((app) => {
   // ━━━━━━━━━━━━━━━━━━━━ ━━━━━━━━━━━━━━━━━━━━━
   app.post(
     "/",
-    requireAuth({
+    {
       validate: {
         body: {
           name: "string:1-50", // required, length 1-50
@@ -532,7 +518,9 @@ export default defineRoutes((app) => {
           409: { description: "Email has been registered" },
         },
       },
-    }),
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
+    },
     async (req, res) => {
       const body = req.valid("body");
 
@@ -551,7 +539,7 @@ export default defineRoutes((app) => {
   // ━━━━━━━━━━━━━━━━━━━━ ━━━━━━━━━━━━━━━━━━━━━
   app.put(
     "/:id",
-    requireAuth({
+    {
       validate: {
         param: { id: "string:1-" },
         body: {
@@ -572,7 +560,9 @@ export default defineRoutes((app) => {
           409: { description: "The mailbox is already used by another user" },
         },
       },
-    }),
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
+    },
     async (req, res) => {
       const { id } = req.valid("param");
       const body = req.valid("body");
@@ -592,7 +582,7 @@ export default defineRoutes((app) => {
   // ━━━━━━━━━━━━━━━━━━━━ ━━━━━━━━━━━━━━━━━━━━━
   app.delete(
     "/:id",
-    requireAuth({
+    {
       validate: {
         param: { id: "string:1-" },
       },
@@ -606,7 +596,9 @@ export default defineRoutes((app) => {
           404: { description: "User does not exist" },
         },
       },
-    }),
+      middlewares: ["auth"],
+      auth: { required: true, security: "bearerAuth" },
+    },
     async (req, res) => {
       const { id } = req.valid("param");
 

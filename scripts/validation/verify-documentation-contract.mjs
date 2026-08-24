@@ -855,6 +855,76 @@ function verifyFrontendStreamingDocumentationContract() {
   }
 }
 
+function verifyRouteProjectionDocumentationContract() {
+  for (const locale of ["en", "zh"]) {
+    const routeDocs = `website/docs/${locale}/api/route-definition.md`;
+    const validationDocs = `website/docs/${locale}/guide/validation.md`;
+    const routeProjectionExamples = [
+      `website/docs/${locale}/api/app.md`,
+      routeDocs,
+      `website/docs/${locale}/examples/crud-api.md`,
+      `website/docs/${locale}/frontend/hydration.md`,
+      `website/docs/${locale}/frontend/seo-sitemap.md`,
+      `website/docs/${locale}/guide/cache.md`,
+      `website/docs/${locale}/guide/i18n.md`,
+      `website/docs/${locale}/guide/openapi.md`,
+      `website/docs/${locale}/guide/routing.md`,
+      `website/docs/${locale}/guide/services.md`,
+    ];
+
+    requireFiles(`${locale} route projection documentation`, [
+      routeDocs,
+      validationDocs,
+      ...routeProjectionExamples,
+    ]);
+
+    if (locale === "en") {
+      requireTokens(routeDocs, [
+        "`factory` must be synchronous",
+        "route-options helper call is rejected",
+        "same-file `const`",
+        "inline synchronous arrow or function expression",
+        "Re-exports",
+      ]);
+      requireTokens(validationDocs, [
+        "`compileField(<static string>)`",
+        "`.description(<static string>)`",
+        "opaque Zod/Yup objects",
+        "`app.setValidator()` replaces runtime compilation",
+        "serializable",
+        "Vext schema values",
+        "Do not place opaque third-party schema instances",
+      ]);
+      forbidTokens(routeDocs, [
+        "helper call whose first argument is a statically projectable options object",
+      ]);
+      forbidTokens(validationDocs, ["field-level Zod schema objects"]);
+    } else {
+      requireTokens(routeDocs, [
+        "路由 `factory` 必须同步",
+        "route options helper 调用会被拒绝",
+        "同文件 `const`",
+        "内联同步箭头函数或 function expression",
+        "重导出",
+      ]);
+      requireTokens(validationDocs, [
+        "`compileField(<静态字符串>)`",
+        "`.description(<静态字符串>)`",
+        "不透明 Zod/Yup 对象",
+        "`app.setValidator()` 替换的是运行时编译引擎",
+        "可序列化的 Vext schema",
+        "不要把不透明的第三方",
+      ]);
+      forbidTokens(routeDocs, ["第一参数可静态投影的 helper 调用"]);
+      forbidTokens(validationDocs, ["字段级 Zod schema 对象"]);
+    }
+
+    for (const example of routeProjectionExamples) {
+      forbidTokens(example, ["requireAuth("]);
+    }
+  }
+}
+
 function verifyFrontendSeoAndNoHydrationDocumentationContract() {
   requireFiles("bilingual frontend SEO documentation", [
     "website/docs/en/frontend/seo-sitemap.md",
@@ -869,8 +939,12 @@ function verifyFrontendSeoAndNoHydrationDocumentationContract() {
     const openapiDocs = `website/docs/${locale}/guide/openapi.md`;
     const staticGrammarTokens =
       locale === "en"
-        ? ["finite static grammar", "same-file `const`", "helper call"]
-        : ["有限静态语法", "同文件 `const`", "helper 调用"];
+        ? [
+            "finite static grammar",
+            "same-file `const`",
+            "helper call is rejected",
+          ]
+        : ["有限静态语法", "同文件 `const`", "helper 调用会被拒绝"];
 
     requireTokens(seoDocs, [
       "frontend.seo",
@@ -1906,6 +1980,7 @@ if (renderedOnly) {
   verifyCliDocs();
   verifyPublicReferenceContracts();
   verifyFrontendStreamingDocumentationContract();
+  verifyRouteProjectionDocumentationContract();
   verifyFrontendSeoAndNoHydrationDocumentationContract();
   verifyFrontendNavigationDocumentationContract();
   verifyFrontendFreshnessMediaDocumentationContract();

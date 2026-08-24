@@ -260,7 +260,7 @@ export default defineRoutes((app) => {
     ]);
   });
 
-  it("uses lexical masking and projects const/helper route request contracts", async () => {
+  it("uses lexical masking and projects same-file const route contracts", async () => {
     projectRoot = await mkdtemp(join(tmpdir(), "vext-route-index-static-"));
     await writeProjectFile(
       projectRoot,
@@ -288,7 +288,7 @@ export default defineRoutes((app) => {
   // app.get("/commented", {}, handler);
   app.get(
     ROUTE_PATH,
-    requireAuth(routeOptions),
+    routeOptions,
     async (req, res) => res.json({ id: req.params.id }),
   );
 });
@@ -325,6 +325,126 @@ export default defineRoutes((app) => {
       required: ["page"],
     });
   });
+
+  it("fails closed for route options helper calls with migration context", async () => {
+    projectRoot = await mkdtemp(join(tmpdir(), "vext-route-index-helper-"));
+    await writeProjectFile(
+      projectRoot,
+      "src/routes/index.ts",
+      `import { defineRoutes } from "vextjs";
+const routeOptions = { frontend: { mode: "dynamic" } };
+function forceStatic(options) {
+  return { ...options, frontend: { mode: "static", static: true } };
+}
+export default defineRoutes((app) => {
+  app.get("/items", forceStatic(routeOptions), handler);
+});
+`,
+    );
+
+    await expect(buildRouteIndex(projectRoot)).rejects.toThrow(
+      /src\/routes\/index\.ts GET \/items route options helper calls.*inline.*same-file const/u,
+    );
+  });
+
+  it("projects canonical schemaAdapter field builders with static arguments", async () => {
+    projectRoot = await mkdtemp(join(tmpdir(), "vext-route-index-builder-"));
+    await writeProjectFile(
+      projectRoot,
+      "src/routes/index.ts",
+      `import { defineRoutes, schemaAdapter as schema } from "vextjs";
+const CONTENT_RULE = "string:1-20000!";
+const CONTENT_DESCRIPTION = "Text to translate";
+const contentField = schema
+  .compileField(CONTENT_RULE)
+  .description(CONTENT_DESCRIPTION);
+
+export default defineRoutes((app) => {
+  app.post("/translate", {
+    validate: {
+      body: {
+        content: contentField,
+        format: schema.compileField("enum:plain_text,preserve_line_breaks!"),
+      },
+    },
+  }, handler);
+});
+`,
+    );
+
+    const [entry] = await buildRouteIndex(projectRoot);
+    expect(entry?.schema.request.body?.schema).toMatchObject({
+      type: "object",
+      required: ["content", "format"],
+      properties: {
+        content: {
+          type: "string",
+          minLength: 1,
+          maxLength: 20000,
+          description: "Text to translate",
+        },
+        format: {
+          type: "string",
+          enum: ["plain_text", "preserve_line_breaks"],
+        },
+      },
+    });
+  });
+
+  it.each([
+    [
+      "dynamic builder argument",
+      `import { defineRoutes, schemaAdapter } from "vextjs";
+export default defineRoutes((app) => {
+  app.post("/items", { validate: { body: {
+    name: schemaAdapter.compileField(getRule()),
+  } } }, handler);
+});
+`,
+      /schemaAdapter\.compileField.*statically resolvable string argument/u,
+    ],
+    [
+      "unknown builder chain",
+      `import { defineRoutes, schemaAdapter } from "vextjs";
+export default defineRoutes((app) => {
+  app.post("/items", { validate: { body: {
+    name: schemaAdapter.compileField("string!").description("Name").optional(),
+  } } }, handler);
+});
+`,
+      /unsupported schemaAdapter call chain/u,
+    ],
+    [
+      "opaque third-party schema",
+      `import { defineRoutes } from "vextjs";
+import { z } from "zod";
+export default defineRoutes((app) => {
+  app.post("/items", { validate: { body: { name: z.string() } } }, handler);
+});
+`,
+      /opaque\/imported schema objects and other call chains are not supported/u,
+    ],
+    [
+      "untrusted schemaAdapter provenance",
+      `import { defineRoutes } from "vextjs";
+import { schemaAdapter } from "./schema.js";
+export default defineRoutes((app) => {
+  app.post("/items", { validate: { body: {
+    name: schemaAdapter.compileField("string!"),
+  } } }, handler);
+});
+`,
+      /opaque\/imported schema objects and other call chains are not supported/u,
+    ],
+  ])(
+    "fails closed for unsupported schema value: %s",
+    async (_label, source, error) => {
+      projectRoot = await mkdtemp(join(tmpdir(), "vext-route-index-schema-"));
+      await writeProjectFile(projectRoot, "src/routes/index.ts", source);
+
+      await expect(buildRouteIndex(projectRoot)).rejects.toThrow(error);
+    },
+  );
 
   it("does not treat a property-chain lookalike as the defineRoutes receiver", async () => {
     projectRoot = await mkdtemp(join(tmpdir(), "vext-route-index-receiver-"));
@@ -367,6 +487,109 @@ export default defineRoutes((app) => {
       expect.objectContaining({ method: "GET", path: "/real" }),
     ]);
   });
+
+  it("projects only the supported default-exported defineRoutes shapes", async () => {
+    projectRoot = await mkdtemp(join(tmpdir(), "vext-route-index-exports-"));
+    await writeProjectFile(
+      projectRoot,
+      "src/routes/alias.ts",
+      `import { defineRoutes as routes } from "vextjs";
+export default routes(function (app) {
+  app.get("/", handler);
+});
+`,
+    );
+    await writeProjectFile(
+      projectRoot,
+      "src/routes/bound.ts",
+      `import { defineRoutes } from "vextjs";
+const routeDefinition = defineRoutes((app) => {
+  app.get("/", handler);
+});
+export default routeDefinition;
+`,
+    );
+    await writeProjectFile(
+      projectRoot,
+      "src/routes/named.ts",
+      `import { defineRoutes } from "vextjs";
+const routeDefinition = defineRoutes((app) => {
+  app.get("/", handler);
+});
+export { routeDefinition as default };
+`,
+    );
+    await writeProjectFile(
+      projectRoot,
+      "src/routes/phantom.ts",
+      `import { defineRoutes } from "vextjs";
+const unused = defineRoutes((app) => {
+  app.get("/not-exported", dynamicOptions, handler);
+});
+export default defineRoutes((app) => {
+  app.get("/", handler);
+});
+`,
+    );
+
+    const routePaths = (await buildRouteIndex(projectRoot))
+      .map((entry) => entry.path)
+      .sort();
+    expect(routePaths).toEqual(["/alias", "/bound", "/named", "/phantom"]);
+  });
+
+  it.each([
+    [
+      "async factory",
+      `import { defineRoutes } from "vextjs";
+export default defineRoutes(async (app) => {
+  app.get("/", handler);
+});
+`,
+      /src\/routes\/index\.ts.*factory must be synchronous/u,
+    ],
+    [
+      "missing default export",
+      `import { defineRoutes } from "vextjs";
+export const routeDefinition = defineRoutes((app) => {
+  app.get("/", handler);
+});
+`,
+      /src\/routes\/index\.ts.*must default-export/u,
+    ],
+    [
+      "default re-export",
+      `import { defineRoutes } from "vextjs";
+export { routeDefinition as default } from "./shared.js";
+`,
+      /src\/routes\/index\.ts.*must not re-export/u,
+    ],
+    [
+      "callback identifier",
+      `import { defineRoutes } from "vextjs";
+const register = (app) => app.get("/", handler);
+export default defineRoutes(register);
+`,
+      /src\/routes\/index\.ts.*requires an inline arrow or function expression/u,
+    ],
+    [
+      "property callee",
+      `import { defineRoutes } from "vextjs";
+export default helpers.defineRoutes((app) => {
+  app.get("/", handler);
+});
+`,
+      /src\/routes\/index\.ts.*default export must be a local defineRoutes/u,
+    ],
+  ])(
+    "fails closed for unsupported route module shape: %s",
+    async (_label, source, error) => {
+      projectRoot = await mkdtemp(join(tmpdir(), "vext-route-index-shape-"));
+      await writeProjectFile(projectRoot, "src/routes/index.ts", source);
+
+      await expect(buildRouteIndex(projectRoot)).rejects.toThrow(error);
+    },
+  );
 
   it("fails closed for route registration nested under runtime control flow", async () => {
     projectRoot = await mkdtemp(join(tmpdir(), "vext-route-index-nested-"));
