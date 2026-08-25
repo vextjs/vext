@@ -57,38 +57,36 @@ vi.mock("../../src/lib/plugins/monsqlize/model-loader.js", () => {
 
   return {
     deriveModelName: deriveModelNameFn,
-    resolveModelEntry: vi.fn(
-      (file: string, def: Record<string, unknown>) => {
-        const withoutExt = file.replace(/\.\w+$/, "");
-        const parts = withoutExt.replace(/\\/g, "/").split("/");
-        const depth = parts.length - 1;
+    resolveModelEntry: vi.fn((file: string, def: Record<string, unknown>) => {
+      const withoutExt = file.replace(/\.\w+$/, "");
+      const parts = withoutExt.replace(/\\/g, "/").split("/");
+      const depth = parts.length - 1;
 
-        if (depth >= 3) return null;
+      if (depth >= 3) return null;
 
-        if (depth === 0) {
-          const registryKey =
-            (def.collection as string | undefined) ??
-            (def.name as string | undefined) ??
-            deriveModelNameFn(file);
-          return { registryKey, finalDef: def, depth };
-        }
+      if (depth === 0) {
+        const registryKey =
+          (def.collection as string | undefined) ??
+          (def.name as string | undefined) ??
+          deriveModelNameFn(file);
+        return { registryKey, finalDef: def, depth };
+      }
 
-        const registryKey = deriveModelNameFn(file);
-        const rawBase = parts[parts.length - 1]!;
-        const finalDef: Record<string, unknown> = { ...def };
-        if (!def.collection && !def.name) {
-          finalDef.name = rawBase;
+      const registryKey = deriveModelNameFn(file);
+      const rawBase = parts[parts.length - 1]!;
+      const finalDef: Record<string, unknown> = { ...def };
+      if (!def.collection && !def.name) {
+        finalDef.name = rawBase;
+      }
+      if (!def.connection) {
+        if (depth === 1) {
+          finalDef.connection = { database: parts[0] };
+        } else {
+          finalDef.connection = { pool: parts[0], database: parts[1] };
         }
-        if (!def.connection) {
-          if (depth === 1) {
-            finalDef.connection = { database: parts[0] };
-          } else {
-            finalDef.connection = { pool: parts[0], database: parts[1] };
-          }
-        }
-        return { registryKey, finalDef, depth };
-      },
-    ),
+      }
+      return { registryKey, finalDef, depth };
+    }),
   };
 });
 
@@ -97,6 +95,7 @@ import {
   type ModelReloaderApp,
   type ModelReloadResult,
 } from "../../src/lib/dev/model-reloader.js";
+import { registerModelPlan } from "../../src/lib/plugins/monsqlize/model-registry.js";
 
 // ── 辅助函数 ──────────────────────────────────────────────
 
@@ -191,6 +190,35 @@ describe("reloadModels", () => {
   });
 
   describe("选择性重载", () => {
+    it("应在 model 文件被删除时原子释放该 source 的 registry key", async () => {
+      const userFile = join(modelsDir, "user.js");
+      await writeFile(
+        userFile,
+        'module.exports = { collection: "users", schema: {} };',
+      );
+      const app = createMockApp();
+      const handle = registerModelPlan(mockModel, app, [
+        {
+          key: "users",
+          definition: { collection: "users", schema: {} },
+          source: "local:user.js",
+        },
+      ]);
+      expect(mockRegistry.has("users")).toBe(true);
+
+      await rm(userFile);
+      const result = await reloadModels(app, outDir, new Set([userFile]));
+
+      expect(result).toEqual({
+        reloaded: 0,
+        unchanged: 0,
+        reloadedNames: [],
+      });
+      expect(handle.keys).toEqual([]);
+      expect(mockRegistry.has("users")).toBe(false);
+      handle.release();
+    });
+
     it("应仅重载 invalidation set 中的 model", async () => {
       const userFile = join(modelsDir, "user.js");
       const orderFile = join(modelsDir, "order.js");
@@ -326,7 +354,7 @@ describe("reloadModels", () => {
   });
 
   describe("回滚机制", () => {
-    it("应在 require 失败时回滚已有 model 到旧定义", async () => {
+    it("应在任一 require 失败时保持全部旧定义且不进入提交", async () => {
       // 文件名确保 aaa-good 在 zzz-bad 之前被处理（字母序）
       const goodFile = join(modelsDir, "aaa-good.js");
       const badFile = join(modelsDir, "zzz-bad.js");
@@ -349,12 +377,8 @@ describe("reloadModels", () => {
         reloadModels(app, outDir, new Set([goodFile, badFile])),
       ).rejects.toThrow();
 
-      // good.js 先成功 redefine（原生 API），然后 bad.js 失败触发回滚
-      // 回滚时 good 的旧定义存在 → 调用原生 redefine 恢复旧定义
-      // 验证 redefine 被调用过（包括正向 + 回滚）
-      expect(mockModel.redefine).toHaveBeenCalled();
-      // 回滚后 goods 应恢复到 registry 中
-      expect(mockRegistry.has("goods")).toBe(true);
+      expect(mockModel.redefine).not.toHaveBeenCalled();
+      expect(mockRegistry.get("goods")?.definition).toBe(oldGoodDef);
     });
 
     it("应对新增的 model（无旧定义）调用 Model.undefine 进行回滚", async () => {
@@ -375,14 +399,12 @@ describe("reloadModels", () => {
         reloadModels(app, outDir, new Set([goodFile, badFile])),
       ).rejects.toThrow();
 
-      // 回滚时旧定义不存在 → polyfill undefine（_registry.delete）移除新注册的 model
-      // aaa-good.js 先成功 define，然后 zzz-bad.js 失败
-      // 回滚后 aaa-good 对应的 model 应被从 registry 中移除
-      // （注意：deriveModelName("aaa-good.js") → "AaaGood"，但 define 用的是 collection "goods"）
+      // 全文件 import/resolve 先于 commit，因此 good 也从未注册。
       expect(mockRegistry.has("goods")).toBe(false);
+      expect(mockModel.define).not.toHaveBeenCalled();
     });
 
-    it("应在回滚时记录错误日志", async () => {
+    it("应把提交前的加载失败直接上抛而不伪报回滚", async () => {
       const badFile = join(modelsDir, "bad.js");
       await writeFile(badFile, "throw new Error('load error');");
 
@@ -391,7 +413,7 @@ describe("reloadModels", () => {
         reloadModels(app, outDir, new Set([badFile])),
       ).rejects.toThrow();
 
-      expect(app.logger.error).toHaveBeenCalled();
+      expect(app.logger.error).not.toHaveBeenCalled();
     });
   });
 
@@ -428,28 +450,28 @@ describe("reloadModels", () => {
   });
 
   describe("无效导出处理", () => {
-    it("应跳过导出 null 的 model 文件", async () => {
+    it("应拒绝导出 null 的 model 文件", async () => {
       const file = join(modelsDir, "null-model.js");
       // module.exports = { default: null } 模拟 CJS 包装
       // 直接 module.exports = null 会导致 mod 为 null，
-      // 源码已加 null 守卫，跳过并 warn
       await writeFile(file, "module.exports = null;");
 
       const app = createMockApp();
-      const result = await reloadModels(app, outDir, new Set([file]));
-
-      // null 导出被 null 守卫拦截（warn 日志），不计入 reloaded
-      expect(app.logger.warn).toHaveBeenCalled();
+      await expect(reloadModels(app, outDir, new Set([file]))).rejects.toThrow(
+        "invalid export",
+      );
+      expect(app.logger.warn).not.toHaveBeenCalled();
     });
 
-    it("应跳过导出数组的 model 文件", async () => {
+    it("应拒绝导出数组的 model 文件", async () => {
       const file = join(modelsDir, "array-model.js");
       await writeFile(file, "module.exports = [1, 2, 3];");
 
       const app = createMockApp();
-      const result = await reloadModels(app, outDir, new Set([file]));
-
-      expect(app.logger.warn).toHaveBeenCalled();
+      await expect(reloadModels(app, outDir, new Set([file]))).rejects.toThrow(
+        "invalid export",
+      );
+      expect(app.logger.warn).not.toHaveBeenCalled();
     });
   });
 

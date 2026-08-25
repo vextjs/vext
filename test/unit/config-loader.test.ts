@@ -2339,6 +2339,51 @@ describe("loadConfig — bootstrap config provider", () => {
     ).rejects.toThrow('Bootstrap config provider "required-provider" failed');
   });
 
+  it("enforces a hard provider deadline and ignores a late result", async () => {
+    fs.writeFileSync(
+      path.join(configDir, "bootstrap.js"),
+      `module.exports = {
+  providers: [{
+    name: "late-provider",
+    required: true,
+    timeoutMs: 10,
+    load(ctx) {
+      globalThis.__vextProviderTimeoutSignal = ctx.signal;
+      return new Promise((resolve) => {
+        setTimeout(() => {
+          globalThis.__vextProviderLateResolved = true;
+          resolve({ host: "late.example" });
+        }, 60);
+      });
+    }
+  }]
+};\n`,
+    );
+
+    const meta: { providerPatch?: Record<string, unknown> } = {};
+    await expect(
+      loadConfig(configDir, {
+        rootDir: tmpRoot,
+        command: "start",
+        mode: "production",
+        meta,
+      }),
+    ).rejects.toThrow('provider "late-provider" failed: Provider timeout');
+
+    const timeoutGlobal = globalThis as typeof globalThis & {
+      __vextProviderTimeoutSignal?: AbortSignal;
+      __vextProviderLateResolved?: boolean;
+    };
+    expect(timeoutGlobal.__vextProviderTimeoutSignal?.aborted).toBe(true);
+    expect(timeoutGlobal.__vextProviderLateResolved).not.toBe(true);
+
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    expect(timeoutGlobal.__vextProviderLateResolved).toBe(true);
+    expect(meta.providerPatch).toBeUndefined();
+    delete timeoutGlobal.__vextProviderTimeoutSignal;
+    delete timeoutGlobal.__vextProviderLateResolved;
+  });
+
   it("loads TypeScript config and bootstrap files with local imports", async () => {
     fs.rmSync(path.join(configDir, "default.js"));
     fs.writeFileSync(

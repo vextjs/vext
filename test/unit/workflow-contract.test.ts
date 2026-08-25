@@ -35,10 +35,17 @@ describe("main CI and deployment workflow contract", () => {
   });
 
   it("uses a tracked ignore source for reproducible Prettier checks", () => {
+    const ci = workflow("ci.yml");
     const formatCheck = script("format-check.mjs");
 
     expect(formatCheck).toContain('"--ignore-path"');
     expect(formatCheck).toContain('".gitignore"');
+    expect(formatCheck).toContain("FORMAT_CHECK_BASE");
+    expect(formatCheck).toContain('process.env.CI === "true"');
+    expect(ci).toContain("fetch-depth: 0");
+    expect(ci).toContain(
+      "github.event.pull_request.base.sha || github.event.before",
+    );
   });
 
   it("keeps exact public-version validation in the tag release", () => {

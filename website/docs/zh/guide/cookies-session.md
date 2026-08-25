@@ -92,6 +92,8 @@ Session 对象支持：
 
 `id`、`isNew`、`save`、`regenerate`、`destroy` 等 session 元数据不可枚举，也不会被持久化进 store。
 
+启用 `autoCommit: true` 时，Vext 会在响应发送屏障等待异步 store 的 `set` 或 `delete`。持久化失败时，原成功响应和新的 session cookie 都不会发出。显式 `save()`/`regenerate()`/`destroy()` 与 auto-commit 共用同一个 in-flight commit，避免重复写入和重复 cookie。流式响应开始后无法再自动持久化 dirty session；请在 `res.stream()` 前执行 `await req.session.save()`。
+
 ## 配置
 
 `config.session.enabled: true` 启用全局 Session 运行时，其余字段用于配置运行时：
@@ -113,7 +115,7 @@ export default {
 };
 ```
 
-`secure: "auto"` 只会在 HTTPS 请求中发送 `Secure`。默认 memory store 适合开发、测试和单进程部署；生产共享 store 推荐通过官方 adapter 接入用户自有 cache-like 后端：
+`secure: "auto"` 只会在 HTTPS 请求中发送 `Secure`。默认 memory store 会在访问时移除已过期条目，并通过有界的机会式 sweep 清理其余过期项，不创建阻止进程退出的 timer；它适合开发、测试和单进程部署。生产共享 store 推荐通过官方 adapter 接入用户自有 cache-like 后端：
 
 ```typescript
 import { createCacheSessionStore } from "vextjs";
@@ -134,7 +136,7 @@ export default {
 
 `createCacheSessionStore()` 接收具备 `get`、`set`、`del` 的结构型 cache，把 `VextSessionStore` 的 TTL 秒转换为 cache 毫秒，默认把 session data 写成 JSON string，并用 cache `get` + `set` 实现 rolling `touch()`。消费项目需要自行安装 `cache-hub` 和选用的后端 client，例如 `ioredis`。
 
-`config.cache.cacheHub` 与 `app.cache` 只服务路由响应缓存，不是 Session Store 捷径，也应与 session 使用不同 namespace。若传入 `close`，Vext 会在应用关闭时自动调用。需要特殊持久化契约时，仍可直接实现底层 `VextSessionStore`。
+`config.cache.cacheHub` 与 `app.cache` 只服务路由响应缓存，不是 Session Store 捷径，也应与 session 使用不同 namespace。若传入 `close`，Vext 会在应用关闭时且仅调用一次。需要特殊持久化契约时，仍可直接实现底层 `VextSessionStore`。
 
 公开路由可设置 `session: false` 跳过 Session。全局运行时关闭时，可通过 `session: true` 或 `{ session: { enabled: true, rolling: true } }` 为单个路由启用。显式 `session()` 中间件仍保留给作用域化或手动注册场景；不要与 `config.session.enabled: true` 重复使用。
 

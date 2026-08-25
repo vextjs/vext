@@ -5,6 +5,7 @@ import {
   mkdir,
   readFile,
   readdir,
+  symlink,
 } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import os from "node:os";
@@ -19,6 +20,7 @@ import {
   writeClientContractFromRouteManifest,
 } from "../../src/frontend/tooling/client-contract-writer.js";
 import { buildFrontendClient } from "../../src/frontend/tooling/client-build-compiler.js";
+import { buildFrontendDeployManifest } from "../../src/frontend/deploy/manifest.js";
 import { writeFrontendMediaArtifacts } from "../../src/frontend/tooling/media-artifact-writer.js";
 import { createFrontendRenderMiddleware } from "../../src/frontend/runtime/renderer.js";
 import { createFrontendDevEventBus } from "../../src/frontend/runtime/dev-events.js";
@@ -229,6 +231,49 @@ describe("frontend config resolver", () => {
         { rootDir, mode: "production" },
       ),
     ).toThrow("config.frontend.outDir");
+  });
+
+  it("rejects destructive frontend output roots and traversal-capable build paths", async () => {
+    const rootDir = await tempRoot();
+
+    expect(() =>
+      resolveFrontendConfig(
+        { enabled: true, outDir: "src" },
+        { rootDir, mode: "production" },
+      ),
+    ).toThrow("config.frontend.outDir");
+
+    expect(() =>
+      resolveFrontendConfig(
+        {
+          enabled: true,
+          build: { client: { assetsDir: "../../outside" } },
+        },
+        { rootDir, mode: "production" },
+      ),
+    ).toThrow("config.frontend.build.client.assetsDir");
+
+    expect(() =>
+      resolveFrontendConfig(
+        {
+          enabled: true,
+          build: { client: { entryNames: "../../[name]-[hash]" } },
+        },
+        { rootDir, mode: "production" },
+      ),
+    ).toThrow("config.frontend.build.client.entryNames");
+
+    expect(() =>
+      resolveFrontendConfig(
+        {
+          enabled: true,
+          build: {
+            server: { outFile: path.join(rootDir, "..", "renderer.cjs") },
+          },
+        },
+        { rootDir, mode: "production" },
+      ),
+    ).toThrow("config.frontend.build.server.outFile");
   });
 
   it("rejects invalid i18n clientLoad values", async () => {
@@ -927,6 +972,74 @@ describe("frontend client build", () => {
         "posts/world/index.html",
         "posts/world/__vext.page.json",
       ]),
+    );
+  });
+
+  it("rejects static route parameters that escape stage or publish roots", async () => {
+    const rootDir = await tempRoot();
+    await createMinimalFrontend(rootDir);
+    await mkdir(path.join(rootDir, ".vext", "manifest"), { recursive: true });
+    await writeFile(
+      path.join(rootDir, ".vext", "manifest", "routes.json"),
+      `${JSON.stringify({
+        routes: [
+          {
+            routeId: "route_escape",
+            method: "GET",
+            path: "/:first/:second",
+            operationId: "escape",
+            docsSummary: "Escape",
+            tags: [],
+            hidden: false,
+            schema: { schemaVersion: 1, request: {}, responses: [] },
+            freshness: {
+              mode: "static",
+              source: "route-options",
+              page: "index",
+              staticParams: [{ first: "..", second: ".." }],
+            },
+            layout: { state: "unresolved", paths: [] },
+          },
+        ],
+      })}\n`,
+      "utf-8",
+    );
+
+    await expect(
+      buildFrontendClient({
+        rootDir,
+        mode: "production",
+        config: { enabled: true, apiClient: false },
+      }),
+    ).rejects.toThrow(/static route|relative path|inside|path segments/iu);
+  });
+
+  it("does not include files reached through an outDir junction in deploy manifests", async () => {
+    const rootDir = await tempRoot();
+    const outsideDir = await tempRoot();
+    const config = resolveFrontendConfig(true, {
+      rootDir,
+      mode: "production",
+    });
+    await mkdir(config.outDir, { recursive: true });
+    await writeFile(path.join(config.outDir, "safe.txt"), "safe");
+    await writeFile(path.join(outsideDir, "secret.txt"), "secret");
+    await symlink(
+      outsideDir,
+      path.join(config.outDir, "linked"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+
+    const manifest = await buildFrontendDeployManifest({
+      rootDir,
+      config,
+      mode: "production",
+      browserManifest: { assets: [] } as any,
+    });
+
+    expect(manifest.assets.map((asset) => asset.file)).toContain("safe.txt");
+    expect(manifest.assets.map((asset) => asset.file)).not.toContain(
+      "linked/secret.txt",
     );
   });
 
@@ -3208,6 +3321,38 @@ describe("frontend static mount", () => {
     expect(fallbackCalled).toBe(1);
     expect(res.statusCode).toBe(404);
     expect(res.streamed).toBe(false);
+  });
+
+  it("does not serve a file through a junction that escapes staticRoot", async () => {
+    const rootDir = await tempRoot();
+    const outsideDir = await tempRoot();
+    const outDir = path.join(rootDir, "dist", "client");
+    await mkdir(outDir, { recursive: true });
+    await writeFile(path.join(outDir, "index.html"), "<main>app</main>");
+    await writeFile(path.join(outsideDir, "secret.txt"), "outside-secret");
+    await symlink(
+      outsideDir,
+      path.join(outDir, "linked"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+
+    let fallbackCalled = 0;
+    const handler = createFrontendNotFoundHandler({
+      rootDir,
+      mode: "production",
+      config: { enabled: true },
+      fallbackHandler: async (_req, res) => {
+        fallbackCalled += 1;
+        res.rawJson({ code: 404 }, 404);
+      },
+    });
+    const res = createMockResponse();
+
+    await handler(createMockRequest("/linked/secret.txt"), res, async () => {});
+
+    expect(res.streamed).toBe(false);
+    expect(res.statusCode).toBe(404);
+    expect(fallbackCalled).toBe(1);
   });
 
   it("uses immutable cache only for content-hashed bundle assets", async () => {

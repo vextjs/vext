@@ -98,6 +98,7 @@
     "verify:schema-v3": "node scripts/validation/check-schema-v3-adaptation.mjs",
     "verify:pack-install": "node scripts/validation/verify-packed-install.mjs",
     "verify:docs-contract": "node scripts/validation/verify-documentation-contract.mjs",
+    "verify:ci-contract": "node scripts/validation/verify-ci-contract.mjs",
     "verify:response-serializer": "node scripts/validation/benchmark-response-serialization.mjs"
   },
   "keywords": [

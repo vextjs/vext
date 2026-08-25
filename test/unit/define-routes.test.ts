@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { runInNewContext } from "node:vm";
 import {
   defineRoutes,
   executeRouteFactory,
@@ -42,6 +43,18 @@ describe("defineRoutes runtime boundary", () => {
     expect(executed).toBe(false);
   });
 
+  it("rejects generator factories before executing their body", () => {
+    let executed = false;
+    const factory = function* () {
+      executed = true;
+    } as unknown as RouteFactory;
+
+    expect(() => defineRoutes(factory)).toThrow(
+      "defineRoutes(factory) requires a synchronous factory",
+    );
+    expect(executed).toBe(false);
+  });
+
   it("rejects thenable results transactionally and restores HTTP methods", () => {
     const app = createMinimalApp();
     const originalGet = () => {
@@ -60,6 +73,50 @@ describe("defineRoutes runtime boundary", () => {
     );
     expect(routeDef.routes).toEqual([]);
     expect((app as unknown as Record<string, unknown>).get).toBe(originalGet);
+  });
+
+  it("closes the isolated registrar before fire-and-forget continuations run", async () => {
+    const app = createMinimalApp();
+    let runtimeGetCalls = 0;
+    (app as unknown as Record<string, unknown>).get = () => {
+      runtimeGetCalls += 1;
+    };
+    let capturedApp: VextApp | undefined;
+    let release!: () => void;
+    let lateError: unknown;
+    const continuation = new Promise<void>((resolve) => {
+      release = resolve;
+    }).then(() => {
+      try {
+        capturedApp!.get("/late", async () => undefined);
+      } catch (error) {
+        lateError = error;
+      }
+    });
+    const routeDef = defineRoutes((routeApp) => {
+      routeApp.get("/early", ((capturedApp = routeApp), async () => undefined));
+      void continuation;
+    });
+
+    executeRouteFactory(routeDef, app);
+    release();
+    await continuation;
+
+    expect(routeDef.routes.map((route) => route.path)).toEqual(["/early"]);
+    expect(runtimeGetCalls).toBe(0);
+    expect(lateError).toBeInstanceOf(Error);
+    expect((lateError as Error).message).toContain("registrar is closed");
+  });
+
+  it("rejects non-undefined synchronous factory results transactionally", () => {
+    const routeDef = defineRoutes(((_app) => {
+      return "unexpected";
+    }) as unknown as RouteFactory);
+
+    expect(() => executeRouteFactory(routeDef, createMinimalApp())).toThrow(
+      "must return undefined",
+    );
+    expect(routeDef.routes).toEqual([]);
   });
 
   it("rejects invalid collector path, options, and handler inputs with Vext errors", () => {
@@ -91,6 +148,104 @@ describe("defineRoutes runtime boundary", () => {
     }
   });
 
+  it.each([
+    [
+      "bracket access",
+      (app: VextApp) => {
+        (app as any)["get"]("/bracket", async () => undefined);
+      },
+    ],
+    [
+      "method extraction",
+      (app: VextApp) => {
+        const get = app.get.bind(app);
+        get("/extracted", async () => undefined);
+      },
+    ],
+    [
+      "destructuring",
+      (app: VextApp) => {
+        const { get } = app;
+        get("/destructured", async () => undefined);
+      },
+    ],
+    [
+      "helper registration",
+      (app: VextApp) => {
+        registerRouteThroughHelper(app);
+      },
+    ],
+  ])("rejects non-canonical runtime registration: %s", (_label, factory) => {
+    expect(() => defineRoutes(factory)).toThrow(/direct top-level statement/u);
+  });
+
+  it("accepts the top-level comma sequence emitted by minified CJS builds", () => {
+    const factory = runInNewContext(`
+      (app) => {
+        app.get("/compiled-a", async () => undefined),
+        app.post("/compiled-b", async () => undefined)
+      }
+    `) as RouteFactory;
+    const routeDef = defineRoutes(factory);
+
+    executeRouteFactory(routeDef, createMinimalApp());
+
+    expect(routeDef.routes.map(({ method, path }) => [method, path])).toEqual([
+      ["GET", "/compiled-a"],
+      ["POST", "/compiled-b"],
+    ]);
+  });
+
+  it("accepts a compiler-lowered non-registrar prefix before direct routes", () => {
+    const factory = runInNewContext(`
+      (app) => {
+        false && app.setRateLimiter({ check: async () => ({ allowed: true }) }),
+        app.get("/compiled-after-config", async () => undefined)
+      }
+    `) as RouteFactory;
+    const routeDef = defineRoutes(factory);
+
+    executeRouteFactory(routeDef, createMinimalApp());
+
+    expect(routeDef.routes.map((route) => route.path)).toEqual([
+      "/compiled-after-config",
+    ]);
+  });
+
+  it("still rejects a compiler-lowered conditional route registration", () => {
+    const factory = runInNewContext(`
+      (app) => {
+        true && app.get("/compiled-conditional", async () => undefined)
+      }
+    `) as RouteFactory;
+
+    expect(() => defineRoutes(factory)).toThrow(/direct top-level statement/u);
+  });
+
+  it("allows non-registrar app capabilities without weakening route grammar", () => {
+    const app = createMinimalApp();
+    let limiterConfigured = false;
+    app.setRateLimiter = () => {
+      limiterConfigured = true;
+    };
+    const enableLimiter = true;
+    const routeDef = defineRoutes((routeApp) => {
+      if (enableLimiter) {
+        routeApp.setRateLimiter({
+          async check() {
+            return { allowed: true, remaining: 1, resetAt: 1 };
+          },
+        });
+      }
+      routeApp.get("/configured", async () => undefined);
+    });
+
+    executeRouteFactory(routeDef, app);
+
+    expect(limiterConfigured).toBe(true);
+    expect(routeDef.routes.map((route) => route.path)).toEqual(["/configured"]);
+  });
+
   it("keeps route factory internals out of the enumerable public shape", () => {
     const routeDef = defineRoutes((app) => {
       app.get("/health", async () => undefined);
@@ -117,7 +272,7 @@ describe("defineRoutes runtime boundary", () => {
     });
   });
 
-  it("executes route factories with the real app identity and restores HTTP methods", async () => {
+  it("executes route factories through an isolated facade without replacing real HTTP methods", async () => {
     const app = createMinimalApp();
     const originalGet = () => {
       throw new Error("placeholder get");
@@ -127,18 +282,22 @@ describe("defineRoutes runtime boundary", () => {
 
     let factoryApp: VextApp | null = null;
     const routeDef = defineRoutes((routeApp) => {
-      factoryApp = routeApp;
-      routeApp.get("/identity", async (req, res) => {
-        res.json({
-          sameApp: req.app === routeApp,
-          service: routeApp.services.identity,
-        });
-      });
+      expect((app as unknown as Record<string, unknown>).get).toBe(originalGet);
+      routeApp.get(
+        "/identity",
+        ((factoryApp = routeApp),
+        async (req, res) => {
+          res.json({
+            sameApp: req.app === routeApp,
+            service: routeApp.services.identity,
+          });
+        }),
+      );
     });
 
     executeRouteFactory(routeDef, app);
 
-    expect(factoryApp).toBe(app);
+    expect(factoryApp).not.toBe(app);
     expect((app as unknown as Record<string, unknown>).get).toBe(originalGet);
     expect(routeDef.routes).toHaveLength(1);
 
@@ -156,8 +315,12 @@ describe("defineRoutes runtime boundary", () => {
     );
 
     expect(body).toEqual({
-      sameApp: true,
+      sameApp: false,
       service: "runtime-service",
     });
   });
 });
+
+function registerRouteThroughHelper(app: VextApp): void {
+  app.get("/helper", async () => undefined);
+}

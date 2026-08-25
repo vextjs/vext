@@ -146,6 +146,8 @@ types. Static routes with `frontend.seo.index: false` or a `noindex` robots
 directive are excluded. More than `maxUrlsPerFile` entries produce a sitemap
 index and numbered chunks; the limit defaults to 50,000.
 
+The complete sitemap set also has independent budgets: `maxUrls` defaults to 100,000, `maxBytes` to 50 MiB of rendered UTF-8 output, and runtime `timeoutMs` to 5,000 ms. Generation stops and fails closed as soon as a budget is exceeded; the runtime deadline aborts the provider signal.
+
 The provider receives only `{ mode, origin, originKey, signal }`; Vext does not
 inject `app`, services, or `app.db` into configuration callbacks. Read dynamic
 entries from a build-safe module or external content source, and honor the
@@ -185,6 +187,8 @@ At runtime, the request `Host` must exactly match `publicOrigin` or one entry in
 `origins`. Unknown hosts return 404 instead of generating attacker-controlled
 canonical or sitemap URLs. A route or render can select a finite named origin
 with `seo.originKey`; undeclared keys fail closed.
+
+Configured origins are canonicalized for host comparison, including trailing dots and default ports, while any pathname base in `publicOrigin` is preserved in canonical, sitemap-index, chunk, and robots URLs. Runtime SEO endpoints support both `GET` and `HEAD`; `HEAD` returns the same status and headers without an entity body.
 
 Runtime sitemap and robots responses use `Cache-Control: no-store`. Add an
 explicit cache at your reverse proxy only after defining its host and refresh

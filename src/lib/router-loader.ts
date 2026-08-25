@@ -25,10 +25,15 @@ import type { RouteMetadataCollector } from "./openapi/collector.js";
 import { pathToFileURL } from "node:url";
 import type { VextInternalHooks, VextRouteHookInfo } from "../types/hooks.js";
 import {
+  isUnsupportedCommonJsRouteFileName,
   shouldDescendIntoRouteDirectory,
   shouldIncludeRouteFileName,
 } from "./route-file-policy.js";
 import { compareRoutePriority } from "./route-priority.js";
+import {
+  createCanonicalRouteIdentity,
+  normalizeRegisteredRoutePath,
+} from "./route-contract.js";
 
 /**
  * router-loader.ts — 路由自动加载器（Phase 1 升级版）
@@ -271,8 +276,8 @@ export async function loadRoutes(
 
     // ── 6.1 重复路由检测 ─────────────────────────────────
     for (const route of routeDefinition.routes) {
-      const fullPath = normalizePath(entry.prefix, route.path);
-      const routeKey = `${route.method.toUpperCase()} ${fullPath}`;
+      const fullPath = normalizeRegisteredRoutePath(entry.prefix, route.path);
+      const routeKey = createCanonicalRouteIdentity(route.method, fullPath);
       const existingFile = registeredRoutes.get(routeKey);
 
       if (existingFile) {
@@ -291,7 +296,7 @@ export async function loadRoutes(
     allRouteDefs.push({
       routes: routeDefinition.routes.map((r) => ({
         method: r.method,
-        path: normalizePath(entry.prefix, r.path),
+        path: normalizeRegisteredRoutePath(entry.prefix, r.path),
         options: r.options ?? {},
       })),
       sourceFile: entry.filePath,
@@ -389,7 +394,7 @@ function prepareRouteDefinitionRegistrations(
 
   for (const [index, route] of routeDef.routes.entries()) {
     // ── 1. 拼接完整路径 ──────────────────────────────────
-    const fullPath = normalizePath(prefix, route.path);
+    const fullPath = normalizeRegisteredRoutePath(prefix, route.path);
     const routeOptions = route.options ?? {};
     prepareRouteResponseSerializers(routeOptions, {
       method: route.method,
@@ -638,6 +643,11 @@ async function scanRouteFiles(dir: string): Promise<string[]> {
       const subFiles = await scanRouteFiles(fullPath);
       files.push(...subFiles);
     } else if (entry.isFile()) {
+      if (isUnsupportedCommonJsRouteFileName(entry.name)) {
+        throw new Error(
+          `[vextjs] CommonJS route source is not supported in Vext 2: ${fullPath}. Rename it to .js/.mjs in an ESM project or convert it to TypeScript.`,
+        );
+      }
       if (!shouldIncludeRouteFileName(entry.name)) continue;
 
       files.push(fullPath);
@@ -723,7 +733,8 @@ function detectPrefixConflicts(entries: RouteEntry[]): void {
   const prefixMap = new Map<string, string>();
 
   for (const entry of entries) {
-    const existing = prefixMap.get(entry.prefix);
+    const prefixIdentity = entry.prefix.toLocaleLowerCase("en-US");
+    const existing = prefixMap.get(prefixIdentity);
     if (existing) {
       throw new Error(
         `[vextjs] Route prefix conflict detected:\n` +
@@ -734,7 +745,7 @@ function detectPrefixConflicts(entries: RouteEntry[]): void {
           `Consider merging them into a single file or reorganizing the directory structure.`,
       );
     }
-    prefixMap.set(entry.prefix, entry.filePath);
+    prefixMap.set(prefixIdentity, entry.filePath);
   }
 }
 
@@ -832,56 +843,6 @@ async function loadRouteFile(
         `         ${(err as Error).message}`,
     );
   }
-}
-
-// ── 路径规范化 ──────────────────────────────────────────────
-
-/**
- * 规范化路由路径
- *
- * 将前缀和子路径拼接为完整路径，处理边界情况：
- *   - 去除重复的 /
- *   - 确保路径以 / 开头
- *   - 去除尾部 /（根路径 / 除外）
- *
- * @param prefix  文件路径推导出的路由前缀（如 /api/users）
- * @param subPath 文件内注册的子路径（如 /list、/:id、/）
- * @returns 规范化后的完整路径
- *
- * @example
- * normalizePath('/users', '/list')   → '/users/list'
- * normalizePath('/users', '/')       → '/users'
- * normalizePath('/users', '/:id')    → '/users/:id'
- * normalizePath('/', '/')            → '/'
- * normalizePath('/api/users', '')    → '/api/users'
- */
-function normalizePath(prefix: string, subPath: string): string {
-  // 去除前缀尾部 /（根路径 '/' 除外）
-  const cleanPrefix =
-    prefix.endsWith("/") && prefix.length > 1 ? prefix.slice(0, -1) : prefix;
-
-  // 去除子路径的前导 /（避免拼接后出现 //）
-  const cleanSubPath = subPath.startsWith("/") ? subPath.slice(1) : subPath;
-
-  // 拼接
-  if (!cleanSubPath) {
-    // 子路径为空或 '/'，直接使用前缀
-    return cleanPrefix || "/";
-  }
-
-  // 当 prefix 是根路径 '/' 时，直接拼接为 '/' + subPath，避免 '//health'
-  if (cleanPrefix === "/") {
-    return `/${cleanSubPath}`;
-  }
-
-  const fullPath = `${cleanPrefix}/${cleanSubPath}`;
-
-  // 去除尾部 /（根路径除外）
-  if (fullPath.length > 1 && fullPath.endsWith("/")) {
-    return fullPath.slice(0, -1);
-  }
-
-  return fullPath;
 }
 
 // ── MiddlewareRegistry 兼容层 ────────────────────────────────

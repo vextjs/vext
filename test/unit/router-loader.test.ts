@@ -827,6 +827,18 @@ describe("router-loader", () => {
         app.mockAdapter.registeredRoutes.map((route) => route.path),
       ).toEqual(["/visible"]);
     });
+
+    it("rejects CommonJS route sources instead of silently skipping them", async () => {
+      const routesDir = join(tmpDir, "routes");
+      await writeRouteFile(routesDir, "index.cjs", "module.exports = {};\n");
+
+      await expect(
+        loadRoutes(createMockApp(), routesDir, {
+          middlewareDefs: {},
+          globalMiddlewares: [],
+        }),
+      ).rejects.toThrow(/CommonJS route source is not supported/u);
+    });
   });
 
   // ── 重复路由检测 ─────────────────────────────────────────
@@ -856,6 +868,27 @@ describe("router-loader", () => {
           globalMiddlewares: [],
         }),
       ).rejects.toThrow(/[Dd]uplicate|[Cc]onflict/);
+    });
+
+    it("rejects case and trailing-slash variants before adapter registration", async () => {
+      const routesDir = join(tmpDir, "routes");
+      await writeRouteFile(
+        routesDir,
+        "index.mjs",
+        makeMultiRouteFile([
+          { method: "get", path: "/Users" },
+          { method: "get", path: "/users/" },
+        ]),
+      );
+      const app = createMockApp();
+
+      await expect(
+        loadRoutes(app, routesDir, {
+          middlewareDefs: {},
+          globalMiddlewares: [],
+        }),
+      ).rejects.toThrow(/Duplicate route/u);
+      expect(app.mockAdapter.registeredRoutes).toEqual([]);
     });
   });
 

@@ -48,7 +48,7 @@ The second parameter `options` in the three-part expression is a declarative con
 | ------------- | ------------------------------------------------------------- |
 | `validate`    | Parameter validation rules (query / body / param / header)    |
 | `middlewares` | Route-level middleware reference                              |
-| `auth`        | Route protection contract, usually wrapped by a local helper  |
+| `auth`        | Route protection contract; inline or same-file final `const`  |
 | `session`     | Route-level Session opt-in, opt-out, or behavior override     |
 | `csrf`        | Route-level CSRF opt-out                                      |
 | `docs`        | OpenAPI documentation configuration                           |

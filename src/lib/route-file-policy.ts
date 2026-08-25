@@ -1,7 +1,9 @@
 import { basename, extname, relative, sep } from "node:path";
 
-export const ROUTE_FILE_EXTENSIONS = new Set([".ts", ".js", ".mjs", ".cjs"]);
+/** Vext 2 route source modules are ESM; CommonJS route files fail closed. */
+export const ROUTE_FILE_EXTENSIONS = new Set([".ts", ".js", ".mjs"]);
 
+/** Discovery includes .cjs so callers can reject it with a precise error. */
 export const ROUTE_SOURCE_PATTERNS = ["**/*.{ts,js,mjs,cjs}"];
 
 export const ROUTE_IGNORE_PATTERNS = [
@@ -35,6 +37,16 @@ export function shouldIncludeRouteFileName(filename: string): boolean {
     !filename.startsWith("_") &&
     !filename.startsWith(".") &&
     !filename.endsWith(".d.ts") &&
+    !isRouteTestFileName(filename) &&
+    !filename.includes(".__vext_compiled__")
+  );
+}
+
+export function isUnsupportedCommonJsRouteFileName(filename: string): boolean {
+  return (
+    extname(filename) === ".cjs" &&
+    !filename.startsWith("_") &&
+    !filename.startsWith(".") &&
     !isRouteTestFileName(filename) &&
     !filename.includes(".__vext_compiled__")
   );

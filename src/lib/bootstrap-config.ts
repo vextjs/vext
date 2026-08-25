@@ -185,15 +185,24 @@ async function executeProvider(
 ): Promise<Record<string, unknown> | null> {
   const timeoutMs = provider.timeoutMs ?? 10_000;
   const controller = new AbortController();
-  const timer = setTimeout(() => {
-    controller.abort(new Error(`Provider timeout after ${timeoutMs}ms`));
-  }, timeoutMs);
+  const timeoutError = new Error(`Provider timeout after ${timeoutMs}ms`);
+  let timer: ReturnType<typeof setTimeout> | undefined;
 
-  try {
-    const patch = await provider.load({
+  const providerResult = Promise.resolve().then(() =>
+    provider.load({
       ...ctx,
       signal: controller.signal,
-    });
+    }),
+  );
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      controller.abort(timeoutError);
+      reject(timeoutError);
+    }, timeoutMs);
+  });
+
+  try {
+    const patch = await Promise.race([providerResult, deadline]);
 
     if (patch === null || patch === undefined) {
       return null;
@@ -213,7 +222,9 @@ async function executeProvider(
 
     return patch;
   } finally {
-    clearTimeout(timer);
+    if (timer) {
+      clearTimeout(timer);
+    }
   }
 }
 

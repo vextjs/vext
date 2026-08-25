@@ -319,8 +319,13 @@ function createOrigin(
         // headers is the post-_onBeforeSend bag (includes Session Set-Cookie).
         // Mutate it so adapter replaceHeaders applies Cache-Control to the wire.
         const hasSetCookie = hasHeader(headers, "Set-Cookie");
+        const hasPendingSessionCommit = res._sessionCommitPending === true;
         const responseHeaders = toCacheHeaderBag(headers);
-        if (!options.requestAllowsCache || hasSetCookie) {
+        if (
+          !options.requestAllowsCache ||
+          hasSetCookie ||
+          hasPendingSessionCommit
+        ) {
           res.setHeader("Cache-Control", "no-store");
           setHeader(headers, "Cache-Control", "no-store");
           responseHeaders["Cache-Control"] = "no-store";

@@ -1,6 +1,10 @@
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import type { VextMiddleware } from "../../types/middleware.js";
+import {
+  assertPathInside,
+  assertRealPathInside,
+} from "../../lib/path-boundary.js";
 import type {
   ResolvedVextFrontendConfig,
   ResolvedVextFrontendSpaFallbackScope,
@@ -161,15 +165,12 @@ function resolveManifestFilePath(
   value: string,
   label: string,
 ): string {
-  const resolved = path.resolve(outDir, value);
-  const relative = path.relative(outDir, resolved);
-  if (
-    relative === "" ||
-    relative.startsWith("..") ||
-    path.isAbsolute(relative)
-  ) {
-    throw new Error(`[vextjs] frontend ${label} must resolve inside outDir.`);
-  }
+  const resolved = assertPathInside(
+    outDir,
+    path.resolve(outDir, value),
+    `frontend ${label}`,
+  );
+  assertRealPathInside(outDir, resolved, `frontend ${label}`);
   return resolved;
 }
 
@@ -200,13 +201,15 @@ function resolveAssetPath(
   const normalizedAsset = path.posix.normalize(relativeAsset);
   if (normalizedAsset.startsWith("../")) return null;
 
-  const candidate = path.resolve(staticRoot, normalizedAsset);
-  const relative = path.relative(staticRoot, candidate);
-  if (
-    relative === "" ||
-    relative.startsWith("..") ||
-    path.isAbsolute(relative)
-  ) {
+  let candidate: string;
+  try {
+    candidate = assertPathInside(
+      staticRoot,
+      path.resolve(staticRoot, normalizedAsset),
+      "frontend static asset path",
+    );
+    assertRealPathInside(staticRoot, candidate, "frontend static asset path");
+  } catch {
     return null;
   }
   return candidate;

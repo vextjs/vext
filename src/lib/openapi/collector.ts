@@ -77,7 +77,9 @@ export class RouteMetadataCollector {
       path,
       options,
       sourceFile,
-      docsKind: detectRouteDocsKind(handler),
+      docsKind: options.frontend
+        ? "frontend-route"
+        : detectRouteDocsKind(handler),
     });
   }
 

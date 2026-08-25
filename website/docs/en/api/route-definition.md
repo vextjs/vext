@@ -579,37 +579,25 @@ export default defineMiddleware(
 ```
 
 ```typescript
-// src/auth/route-guards.ts
+// src/routes/posts.ts
 import type { RouteOptions } from "vextjs";
 
-export function requirePostUpdate(options: RouteOptions): RouteOptions {
-  return {
-    ...options,
-    middlewares: ["auth"],
-    auth: {
-      roles: ["admin"],
-      scopes: ["posts:write"],
-      permissions: [
-        { action: "post:update", resource: (req) => req.params.id },
-      ],
-      mode: "all",
-      security: "bearerAuth",
-    },
-  };
-}
+const updatePostOptions = {
+  middlewares: ["auth"],
+  auth: {
+    roles: ["admin"],
+    scopes: ["posts:write"],
+    permissions: [{ action: "post:update", resource: "POST:/api/posts/:id" }],
+    mode: "all",
+    security: "bearerAuth",
+  },
+  docs: { summary: "Update post" },
+} satisfies RouteOptions;
+
+app.post("/posts/:id", updatePostOptions, handler);
 ```
 
-```typescript
-app.post(
-  "/posts/:id",
-  requirePostUpdate({
-    docs: { summary: "Update post" },
-  }),
-  handler,
-);
-```
-
-Use the raw `auth` object directly only for a one-off route or low-level API reference examples. In real applications, keep middleware names, security schemes, roles, scopes, and permission resources in local helpers.
+The build index accepts the final inline object or a same-file `const` such as `updatePostOptions`. It rejects route-options helper calls because it does not execute helper bodies. Keep each route's complete guard contract in one of these statically projectable forms; shared runtime authorization logic still belongs in middleware or the permission provider.
 
 ### Runtime auth, OpenAPI security, and Docs access
 

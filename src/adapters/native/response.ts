@@ -300,6 +300,13 @@ class NativeVextResponse implements VextResponse {
    * Called once by the adapter after the middleware chain (and error handler)
    * returns so onion after-logic can still `setHeader` / `cookie`.
    */
+  _discardPendingSend(): boolean {
+    if (this._flushed) return false;
+    this._pending = null;
+    this._sent = false;
+    return true;
+  }
+
   _flush(): void {
     if (this._flushed || !this._pending) return;
     this._flushed = true;

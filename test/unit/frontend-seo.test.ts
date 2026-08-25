@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveFrontendConfig } from "../../src/frontend/tooling/config-resolver.js";
 import {
+  assertSitemapResourceLimits,
   renderRobotsTxt,
   renderSitemapDocuments,
   validateSitemapEntries,
@@ -179,6 +180,15 @@ describe("frontend SEO head", () => {
       origin: "https://cn.example.test:8443/base",
       originKey: "cn",
     });
+    expect(selectRuntimeOrigin(config.seo, "WWW.EXAMPLE.TEST.:443")).toEqual({
+      origin: "https://www.example.test",
+    });
+    expect(
+      selectRuntimeOrigin(config.seo, "www.example.test:444"),
+    ).toBeUndefined();
+    expect(
+      selectRuntimeOrigin(config.seo, "user@www.example.test"),
+    ).toBeUndefined();
     expect(
       selectRuntimeOrigin(config.seo, "unknown.example.test"),
     ).toBeUndefined();
@@ -377,17 +387,17 @@ describe("frontend sitemap and robots", () => {
       1,
     );
 
-    expect(entries.map((entry) => entry.pathname)).toEqual(["/a&b", "/z"]);
+    expect(entries.map((entry) => entry.pathname)).toEqual(["/a%26b", "/z"]);
     expect(documents.map((document) => document.pathname)).toEqual([
       "/sitemap.xml",
       "/sitemap-1.xml",
       "/sitemap-2.xml",
     ]);
     expect(documents[0]?.content).toContain(
-      "https://www.example.test/sitemap-1.xml",
+      "https://www.example.test/base/sitemap-1.xml",
     );
     expect(documents[1]?.content).toContain(
-      "https://www.example.test/base/a&amp;b",
+      "https://www.example.test/base/a%26b",
     );
     expect(() =>
       validateSitemapEntries(
@@ -417,6 +427,45 @@ describe("frontend sitemap and robots", () => {
         {},
       ),
     ).toThrow(/pathname/u);
+    expect(
+      validateSitemapEntries(
+        [{ pathname: "/café" }, { pathname: "/a b" }],
+        "https://www.example.test",
+        {},
+      ).map((entry) => entry.pathname),
+    ).toEqual(["/a%20b", "/caf%C3%A9"]);
+    for (const unsafePathname of ["/a%2Fb", "/a%5cb", "/%00"]) {
+      expect(() =>
+        validateSitemapEntries(
+          [{ pathname: unsafePathname }],
+          "https://www.example.test",
+          {},
+        ),
+      ).toThrow(/pathname/u);
+    }
+    expect(() =>
+      validateSitemapEntries(
+        [{ pathname: "/%61" }, { pathname: "/a" }],
+        "https://www.example.test",
+        {},
+      ),
+    ).toThrow(/duplicate sitemap URL/u);
+    expect(() =>
+      assertSitemapResourceLimits(
+        [{ pathname: "/a" }, { pathname: "/b" }],
+        [{ content: "short" }],
+        1,
+        100,
+      ),
+    ).toThrow(/maxUrls/u);
+    expect(() =>
+      assertSitemapResourceLimits(
+        [{ pathname: "/a" }],
+        [{ content: "too large" }],
+        1,
+        2,
+      ),
+    ).toThrow(/maxBytes/u);
   });
 
   it.each([
@@ -569,9 +618,11 @@ describe("frontend sitemap and robots", () => {
       "/robots.txt",
     ]);
     expect(sitemap).toContain("https://www.example.test/base/about");
-    expect(sitemap).toContain("https://www.example.test/base/news/a&amp;b");
+    expect(sitemap).toContain("https://www.example.test/base/news/a%26b");
     expect(robots).toContain("User-agent: *");
-    expect(robots).toContain("Sitemap: https://www.example.test/sitemap.xml");
+    expect(robots).toContain(
+      "Sitemap: https://www.example.test/base/sitemap.xml",
+    );
     expect(getFrontendContentType("sitemap.xml")).toBe(
       "application/xml; charset=utf-8",
     );
@@ -655,10 +706,13 @@ describe("frontend runtime SEO endpoints", () => {
     } as any;
     registerFrontendSeoEndpoints(app, config);
 
-    expect(registered.map((route) => route.path)).toEqual([
-      "/sitemap.xml",
-      "/sitemap-:chunk.xml",
-      "/robots.txt",
+    expect(registered.map((route) => `${route.method} ${route.path}`)).toEqual([
+      "HEAD /sitemap.xml",
+      "GET /sitemap.xml",
+      "HEAD /sitemap-:chunk.xml",
+      "GET /sitemap-:chunk.xml",
+      "HEAD /robots.txt",
+      "GET /robots.txt",
     ]);
     const sitemapRoute = registered.find(
       (route) => route.path === "/sitemap.xml",
@@ -804,6 +858,121 @@ describe("frontend runtime SEO endpoints", () => {
     closeHandler();
 
     await expect(request).rejects.toThrow("runtime provider aborted");
+  });
+
+  it("rejects malformed chunk requests before provider work", async () => {
+    const rootDir = await tempRoot();
+    let providerCalls = 0;
+    const config = resolveFrontendConfig(
+      {
+        enabled: true,
+        seo: {
+          publicOrigin: "https://www.example.test/base",
+          sitemap: {
+            mode: "runtime",
+            includeStatic: false,
+            entries: () => {
+              providerCalls++;
+              return [];
+            },
+          },
+          robots: false,
+        },
+      },
+      { rootDir, mode: "production" },
+    );
+    const registered: Array<{
+      method: string;
+      path: string;
+      chain: Array<(req: any, res: any) => Promise<void>>;
+    }> = [];
+    registerFrontendSeoEndpoints(
+      {
+        adapter: {
+          registerRoute(method: string, routePath: string, chain: any[]) {
+            registered.push({ method, path: routePath, chain });
+          },
+        },
+      } as any,
+      config,
+    );
+    const chunkRoute = registered.find(
+      (route) => route.method === "GET" && route.path.includes(":chunk"),
+    )!;
+
+    for (const requestedPath of [
+      "/sitemap-0.xml",
+      "/sitemap-01.xml",
+      "/sitemap-any.xml",
+    ]) {
+      const response = createTextResponse();
+      await chunkRoute.chain[0]!(
+        {
+          path: requestedPath,
+          headers: { host: "www.example.test" },
+          onClose() {},
+        },
+        response,
+      );
+      expect(response.statusCode).toBe(404);
+    }
+    expect(providerCalls).toBe(0);
+  });
+
+  it("enforces a hard runtime sitemap deadline and ignores late completion", async () => {
+    const rootDir = await tempRoot();
+    let providerResolved = false;
+    const config = resolveFrontendConfig(
+      {
+        enabled: true,
+        seo: {
+          publicOrigin: "https://www.example.test",
+          sitemap: {
+            mode: "runtime",
+            includeStatic: false,
+            timeoutMs: 10,
+            entries: () =>
+              new Promise<readonly { pathname: string }[]>((resolve) => {
+                setTimeout(() => {
+                  providerResolved = true;
+                  resolve([{ pathname: "/late" }]);
+                }, 30);
+              }),
+          },
+          robots: false,
+        },
+      },
+      { rootDir, mode: "production" },
+    );
+    let sitemapHandler!: (req: any, res: any) => Promise<void>;
+    registerFrontendSeoEndpoints(
+      {
+        adapter: {
+          registerRoute(method: string, routePath: string, chain: any[]) {
+            if (method === "GET" && routePath === "/sitemap.xml") {
+              sitemapHandler = chain[0];
+            }
+          },
+        },
+      } as any,
+      config,
+    );
+    const response = createTextResponse();
+    await sitemapHandler(
+      {
+        path: "/sitemap.xml",
+        headers: { host: "www.example.test" },
+        onClose() {},
+      },
+      response,
+    );
+
+    expect(response.statusCode).toBe(504);
+    expect(response.body).toBe("Gateway Timeout");
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(providerResolved).toBe(true);
+    expect(response.statusCode).toBe(504);
+    expect(response.body).toBe("Gateway Timeout");
   });
 });
 

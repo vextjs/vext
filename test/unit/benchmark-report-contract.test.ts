@@ -38,7 +38,9 @@ function runBenchmarkCli(relativePath: string, args: string[]) {
     {
       cwd: process.cwd(),
       encoding: "utf8",
-      timeout: 10_000,
+      // Keep the subprocess guard below Vitest's 30s test timeout while
+      // allowing Windows process startup under full-suite CPU contention.
+      timeout: 25_000,
     },
   );
   return {

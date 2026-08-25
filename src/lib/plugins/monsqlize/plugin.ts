@@ -28,6 +28,7 @@ import {
 import type { MonSQLizeDatabaseConfig } from "./types.js";
 import { createConnection } from "./connection.js";
 import { loadModels } from "./model-loader.js";
+import type { ModelRegistrationHandle } from "./model-registry.js";
 import { loadMonSQLizeClass } from "./module.js";
 import type { StartupProfiler } from "../../startup-profiler.js";
 
@@ -239,12 +240,24 @@ export async function setupMonSQLize(
     throw err;
   }
 
+  let modelRegistration: ModelRegistrationHandle | undefined;
+
   // ── 3. 先注册 onClose，再执行 I/O（安全模式）──────────────
   //
   // 即使 connect() 失败，onClose 也能正确清理半初始化的资源。
   // monsqlize.close() 内部会检查连接状态，未连接时是 no-op。
   //
   app.onClose(async () => {
+    try {
+      modelRegistration?.release();
+      if (modelRegistration && modelRegistration.keys.length === 0) {
+        app.logger.info("[monsqlize] app-owned models released");
+      }
+    } catch (err) {
+      app.logger.error("[monsqlize] error releasing app-owned models", {
+        error: (err as Error).message,
+      });
+    }
     try {
       await monsqlize.close();
       app.logger.info("[monsqlize] connection closed");
@@ -266,8 +279,10 @@ export async function setupMonSQLize(
     app.logger.info("[monsqlize] connected successfully");
 
     // ── 5. 加载 Model 定义 ────────────────────────────────────
-    await timeMonSQLize(options, "worker.builtinPlugin.monsqlize.models", () =>
-      loadModels(monsqlize, config!.models, app, srcDir),
+    modelRegistration = await timeMonSQLize(
+      options,
+      "worker.builtinPlugin.monsqlize.models",
+      () => loadModels(monsqlize, config!.models, app, srcDir),
     );
 
     // ── 6. 挂载到 app ─────────────────────────────────────────
@@ -280,6 +295,16 @@ export async function setupMonSQLize(
     );
   } catch (err) {
     await stopMemoryServers();
+    try {
+      modelRegistration?.release();
+    } catch (releaseErr) {
+      app.logger.warn(
+        "[monsqlize] failed to release models after setup error",
+        {
+          error: (releaseErr as Error).message,
+        },
+      );
+    }
     try {
       await monsqlize.close();
     } catch (closeErr) {

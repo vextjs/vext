@@ -550,7 +550,7 @@ describe("Model 热重载集成测试", () => {
   // ── 7. 无效导出处理 ───────────────────────────────────
 
   describe("无效导出处理", () => {
-    it("应跳过导出 null 的 model 文件", async () => {
+    it("应拒绝导出 null 的 model 文件", async () => {
       const fileName = "null-export.js";
       const filePath = await writeModelFile(
         modelsDir,
@@ -559,16 +559,15 @@ describe("Model 热重载集成测试", () => {
       );
 
       const app = createMockApp();
-      const result = await reloadModels(app, outDir, new Set([filePath]));
-
-      // null 导出应被跳过，不计入 reloaded
-      expect(result.reloaded).toBe(0);
+      await expect(
+        reloadModels(app, outDir, new Set([filePath])),
+      ).rejects.toThrow("invalid export");
 
       // 清理
       clearRequireCache(filePath);
     });
 
-    it("应跳过导出数组的 model 文件", async () => {
+    it("应拒绝导出数组的 model 文件", async () => {
       const fileName = "array-export.js";
       const filePath = await writeModelFile(
         modelsDir,
@@ -577,9 +576,9 @@ describe("Model 热重载集成测试", () => {
       );
 
       const app = createMockApp();
-      const result = await reloadModels(app, outDir, new Set([filePath]));
-
-      expect(result.reloaded).toBe(0);
+      await expect(
+        reloadModels(app, outDir, new Set([filePath])),
+      ).rejects.toThrow("invalid export");
 
       // 清理
       clearRequireCache(filePath);

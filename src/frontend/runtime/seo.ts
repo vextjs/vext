@@ -10,6 +10,7 @@ import type { VextRenderHeadOptions } from "../../types/response.js";
 import {
   normalizeRenderSeoOptions,
   normalizeRouteSeoOptions,
+  normalizeSeoPathname,
 } from "../contract/seo-normalization.js";
 
 export interface ResolveSeoHeadInput {
@@ -141,7 +142,6 @@ export function selectRuntimeOrigin(
   host: string | undefined,
 ): { origin: string; originKey?: string } | undefined {
   if (!host) return undefined;
-  const normalizedHost = host.trim().toLowerCase();
   const candidates: Array<{ origin: string; originKey?: string }> = [
     ...(config.publicOrigin ? [{ origin: config.publicOrigin }] : []),
     ...Object.entries(config.origins).map(([originKey, origin]) => ({
@@ -149,10 +149,31 @@ export function selectRuntimeOrigin(
       originKey,
     })),
   ];
-  return candidates.find(
-    (candidate) =>
-      new URL(candidate.origin).host.toLowerCase() === normalizedHost,
-  );
+  return candidates.find((candidate) => {
+    const originUrl = new URL(candidate.origin);
+    return (
+      normalizeSeoAuthority(host, originUrl.protocol) ===
+      normalizeSeoAuthority(originUrl.host, originUrl.protocol)
+    );
+  });
+}
+
+function normalizeSeoAuthority(
+  authority: string,
+  protocol: string,
+): string | undefined {
+  const trimmed = authority.trim();
+  if (!trimmed || /[\\/?#@]/u.test(trimmed)) return undefined;
+  try {
+    const parsed = new URL(`${protocol}//${trimmed}`);
+    const hostname = parsed.hostname.toLowerCase().replace(/\.+$/u, "");
+    if (!hostname) return undefined;
+    const defaultPort = protocol === "https:" ? "443" : "80";
+    const port = parsed.port || defaultPort;
+    return `${hostname}:${port}`;
+  } catch {
+    return undefined;
+  }
 }
 
 export function joinPublicUrl(origin: string, pathname: string): string {
@@ -162,39 +183,7 @@ export function joinPublicUrl(origin: string, pathname: string): string {
 }
 
 export function normalizePathname(value: string): string {
-  let decoded: string;
-  try {
-    decoded = decodeURIComponent(value);
-  } catch {
-    throw new Error(
-      `[vextjs] SEO pathname contains invalid encoding: ${value}`,
-    );
-  }
-  if (
-    !value.startsWith("/") ||
-    value.startsWith("//") ||
-    value.includes("?") ||
-    value.includes("#") ||
-    value.includes("\\") ||
-    !decoded.startsWith("/") ||
-    decoded.startsWith("//") ||
-    decoded.includes("?") ||
-    decoded.includes("#") ||
-    decoded.includes("\\") ||
-    hasDotPathSegment(value) ||
-    hasDotPathSegment(decoded)
-  ) {
-    throw new Error(
-      `[vextjs] SEO pathname must be absolute and contain no query or hash: ${value}`,
-    );
-  }
-  return value === "/" ? value : value.replace(/\/+$/u, "");
-}
-
-function hasDotPathSegment(value: string): boolean {
-  return value
-    .split("/")
-    .some((segment) => segment === "." || segment === "..");
+  return normalizeSeoPathname(value, "SEO pathname");
 }
 
 function splitRouteSeo(value: VextRouteFrontendSeoOptions | undefined): {

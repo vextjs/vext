@@ -112,24 +112,29 @@ export default definePlugin({
 
 :::
 
-### `setup(app)`
+### `setup(app, context)`
 
 插件初始化函数，在 `bootstrap` 的步骤②被 `plugin-loader` 调用。
 
 ```typescript
-setup(app: VextApp): Promise<void> | void;
+setup(
+  app: VextPluginContext,
+  context: VextPluginSetupContext,
+): Promise<void> | void;
 ```
 
 **参数**：
 
-| 参数  | 类型      | 说明                                                       |
-| ----- | --------- | ---------------------------------------------------------- |
-| `app` | `VextApp` | 应用实例（此时 `app.use()` 可用，`app.services` 尚未注入） |
+| 参数      | 类型                     | 说明                                                                  |
+| --------- | ------------------------ | --------------------------------------------------------------------- |
+| `app`     | `VextPluginContext`      | 可撤销的 setup facade；此时 `app.use()` 可用，`app.services` 尚未注入 |
+| `context` | `VextPluginSetupContext` | setup 生命周期上下文，包含供可取消 I/O 使用的 `signal: AbortSignal`   |
 
 **关键说明**：
 
 - 可以是同步或异步函数
-- `plugin-loader` 为每个 `setup()` 设置**超时保护**（默认 30 秒），超时后抛出错误
+- `plugin-loader` 为每个 `setup()` 设置**硬超时**（默认 30 秒）；超时会中止 `context.signal`、回滚 setup 阶段的框架 mutation、撤销 setup facade，然后抛出错误
+- 迟到的异步 continuation 无法提交框架状态；插件仍须取消并关闭自己创建的外部资源
 - 执行顺序由 `dependencies` 拓扑排序决定
 - `setup()` 执行时 `app.services` 尚未注入（`service-loader` 在 `plugin-loader` 之后执行），不能访问服务
 - 如果插件对象声明了 `onReady(app)` / `onClose(app)`，`plugin-loader` 会在 `setup()` 成功后自动注册这两个生命周期钩子

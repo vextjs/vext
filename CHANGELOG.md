@@ -58,6 +58,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `vext build --typecheck` from the generated build script. TypeScript
   create/dev/typegen owns `src/types/generated`; JavaScript flows keep tooling
   declarations under `.vext/types` and do not create that public shim.
+- Requests expose a lifecycle-bound `AbortSignal`; plugin setup and bootstrap
+  providers receive abort signals backed by hard deadlines.
+- Model auto-registration now validates a complete plan before commit, defaults
+  to strict discovery, tracks application ownership, and rolls back atomically.
+- Session auto-commit now awaits asynchronous stores at the response send
+  barrier, while the memory store performs bounded opportunistic expiry cleanup.
 
 #### Fixed
 
@@ -65,6 +71,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   boundaries. Native async factories fail before execution, and custom
   thenables fail transactionally without leaving partially registered routes or
   clearing the route helper methods.
+- Runtime route validation now accepts the compiler-lowered top-level comma
+  sequence emitted by minified CJS builds, including allowed non-registrar app
+  configuration before routes. Source indexing keeps the stricter
+  direct-statement grammar and still rejects route helpers or control flow.
+- Static route projection now distinguishes the seven route registrar members
+  from other direct `VextApp` capability access, so configuration such as
+  `app.setRateLimiter()` no longer produces a false route-registration error.
 - SEO artifact output containment now treats POSIX and Windows separators,
   drive paths, UNC paths, and traversal segments consistently on every host.
 - Ordinary `main` CI now distinguishes the unpublished 2.0.0 docs preview from
@@ -74,8 +87,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gate, and final preflight reads external-consumer evidence for the current
   package major instead of reusing v1 evidence.
 - Changed-file formatting pins the tracked `.gitignore` as its ignore source,
-  so an ignored local `.prettierignore` cannot hide failures that a clean CI
-  checkout would detect.
+  compares the complete PR/push delta, and fails closed when CI cannot resolve
+  that baseline, so local ignores or merge checkouts cannot hide formatting
+  failures.
 - SEO input is deeply normalized across defaults and routes; request-host
   origin ambiguity, robots control characters, bare-wildcard endpoint
   conflicts, and concurrent artifact-writer ownership now fail safely.
@@ -85,6 +99,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TypeScript service loading now waits for its best-effort temporary-module
   cleanup before returning, avoiding Windows directory-removal races under
   concurrent test or application teardown.
+- Build cleanup, frontend output, static mounts, deploy manifests, upload state,
+  and filesystem staging now share lexical/realpath containment checks and
+  reject traversal, escaping symbolic links, duplicate keys, and hash/size
+  drift before destructive work or transfer.
+- Runtime sitemap/robots endpoints now preserve origin pathname bases, normalize
+  host authority, support bodyless `HEAD`, and enforce total URL, byte, and hard
+  time budgets.
+- Runtime sitemap/robots register explicit `HEAD` before same-path `GET`, avoiding
+  Fastify's automatic HEAD sibling collision while preserving ordinary GET
+  fallback behavior.
+- Route indexing/runtime registration now share canonical path and finite grammar
+  rules; Doctor manifests carry source fingerprints and stale snapshots refresh
+  unless `--manifest-only` is explicitly selected.
+- Plugin/bootstrap/route timeout paths now reject late continuations and roll
+  back framework state; streaming responses and session persistence observe the
+  same failure barriers.
+- CommonJS public subpaths share error and logger runtime identity, and ESM
+  preload resolution caches are isolated by project and resolution base.
+- Model hot reload now removes keys owned by deleted or renamed model source
+  files in the same atomic source-replacement transaction.
+- Failed asynchronous session persistence discards the staged success response
+  across all five adapters and re-enters the normal error response path without
+  an unhandled rejection or a new session cookie.
+- CI now runs lint and changed-file formatting, package and rendered-doc
+  contracts, plus a Windows/Node 22 representative path and package lane before
+  the aggregate `CI ✅` check can pass.
 
 #### Removed
 

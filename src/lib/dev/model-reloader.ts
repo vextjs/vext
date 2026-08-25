@@ -3,8 +3,16 @@ import { existsSync } from "node:fs";
 import type { Dirent } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { deriveModelName, resolveModelEntry } from "../plugins/monsqlize/model-loader.js";
+import { resolveModelEntry } from "../plugins/monsqlize/model-loader.js";
 import { loadMonSQLizeModelClass } from "../plugins/monsqlize/module.js";
+import {
+  replaceAppModelSources,
+  validateModelRegistration,
+} from "../plugins/monsqlize/model-registry.js";
+import type {
+  ModelRegistryClass,
+  PlannedModelRegistration,
+} from "../plugins/monsqlize/model-registry.js";
 
 // 在 ESM 环境中通过 createRequire 获取 CJS 的 require 函数。
 // model-reloader 需要 require() 加载 .vext/dev/models/ 下的 CJS 编译产物，
@@ -15,22 +23,22 @@ const esmRequire = createRequire(import.meta.url);
  * model-reloader.ts — 选择性 Model 定义重载（monSQLize 热重载集成）
  *
  * Soft Reload 时只重新加载 invalidation set 中包含的 model 定义文件，
- * 其他 model 定义保持不变。使用 monSQLize v1.1.8 原生 Model.redefine() API。
+ * 其他 model 定义保持不变。使用 monSQLize 3.3.0 的 registry API。
  *
  * 核心流程：
  *
  *   1. 扫描 outDir/models/ 下所有 .js 文件
  *   2. 筛选出在 invalidation set 中的文件（需要重载的）
- *   3. 保存受影响 model 的旧定义（用于回滚）
- *   4. 逐个 require() 新编译产物，调用 Model.redefine() 更新定义
- *   5. 如果任何步骤失败，回滚所有受影响的 model 到旧定义
+ *   3. require/resolve 全部受影响文件并形成 validated plan
+ *   4. 通过 app-owned registry 事务一次提交
+ *   5. 如果 commit 失败，恢复所有受影响 key 的旧定义
  *
  * 安全保证：
  *
  *   | 场景                          | 行为                                              |
  *   |-------------------------------|---------------------------------------------------|
  *   | model 文件不在失效集合中       | 完全不触碰，定义保持不变                            |
- *   | require() 新模块失败           | 回滚所有受影响 model 到旧定义，向上抛出错误          |
+ *   | require() 新模块失败           | 提交前失败，registry 保持不变并向上抛出错误           |
  *   | Model.redefine() 失败          | 回滚所有受影响 model 到旧定义，向上抛出错误          |
  *   | 嵌套目录（admin/role）         | 正确映射为 AdminRole（复用 deriveModelName）         |
  *   | 无 models/ 目录                | 静默跳过，返回空结果                                |
@@ -71,52 +79,26 @@ export interface ModelReloadResult {
   reloadedNames: string[];
 }
 
-/**
- * 保存的旧 model 定义（用于回滚）
- */
-interface SavedModelEntry {
-  /** collection name（如 "User"、"OrderItem"） */
-  name: string;
-
-  /**
-   * 旧的 model 定义对象
-   *
-   * undefined 表示该 model 在重载前不存在（新增的 model 文件），
-   * 回滚时应调用 Model.undefine() 移除。
-   */
-  definition: unknown | undefined;
-}
-
 // ── Model 静态类获取 ────────────────────────────────────────
 
 /**
  * ModelClassAPI — model-reloader 所需的 Model 静态方法接口
  *
- * 全部使用 monSQLize v1.1.8 原生 API：
+ * 全部使用 monSQLize 3.3.0 原生 API：
  *   - define(name, definition)    — 注册新 model
  *   - redefine(name, definition)  — 更新已有 model 定义（v1.1.7+）
  *   - undefine(name)              — 移除 model 定义（v1.1.7+）
  *   - has(name)                   — 检查 model 是否已注册
- *   - getDefinition(name)         — 获取 model 定义对象（从 registry entry 中提取 .definition）
+ *   - get(name)                   — 获取 registry entry 与原始 definition
  */
-interface ModelClassAPI {
-  define: (name: string, definition: unknown) => void;
-  redefine: (name: string, definition: unknown) => void;
-  undefine: (name: string) => boolean;
-  has: (name: string) => boolean;
-  getDefinition: (name: string) => unknown | undefined;
-}
-
 /**
- * getModelClass — 获取 monSQLize 的 Model 静态类并包装为统一接口
+ * getModelClass — 获取 monSQLize 的 Model 静态类
  *
- * monSQLize v1.1.8 原生提供 define / has / get / redefine / undefine。
- * get 返回 { collectionName, definition } 包装对象，
- * 本函数额外提供 getDefinition() 便捷方法提取纯 definition。
+ * monSQLize 3.3.0 原生提供 define / has / get / redefine / undefine。
  *
  * @returns 统一的 Model 操作接口
  */
-async function getModelClass(): Promise<ModelClassAPI> {
+async function getModelClass(): Promise<ModelRegistryClass> {
   const ModelStatic = (await loadMonSQLizeModelClass()) as {
     define: (name: string, definition: unknown) => void;
     redefine: (name: string, definition: unknown) => void;
@@ -127,23 +109,7 @@ async function getModelClass(): Promise<ModelClassAPI> {
     ) => { collectionName: string; definition: unknown } | undefined;
   };
 
-  return {
-    define: ModelStatic.define.bind(ModelStatic),
-    redefine: ModelStatic.redefine.bind(ModelStatic),
-    undefine: ModelStatic.undefine.bind(ModelStatic),
-    has: ModelStatic.has.bind(ModelStatic),
-
-    /**
-     * getDefinition — 获取 model 的 definition 对象
-     *
-     * Model.get() 返回 { collectionName, definition }，
-     * 此方法提取并返回 .definition 部分（回滚时需要原始定义）。
-     */
-    getDefinition(name: string): unknown | undefined {
-      const entry = ModelStatic.get(name);
-      return entry?.definition;
-    },
-  };
+  return ModelStatic;
 }
 
 // ── 扫描 models 目录 ───────────────────────────────────────
@@ -191,20 +157,45 @@ async function scanModelDirectory(dir: string): Promise<string[]> {
   return files;
 }
 
+function localModelSource(
+  modelsDir: string,
+  compiledFile: string,
+): string | undefined {
+  const relativePath = path.relative(modelsDir, compiledFile);
+  if (
+    relativePath.length === 0 ||
+    path.isAbsolute(relativePath) ||
+    relativePath === ".." ||
+    relativePath.startsWith(`..${path.sep}`) ||
+    !relativePath.endsWith(".js")
+  ) {
+    return undefined;
+  }
+  const segments = relativePath.split(path.sep);
+  if (
+    segments.some(
+      (segment) => segment.startsWith("_") || segment.startsWith("."),
+    )
+  ) {
+    return undefined;
+  }
+  return `local:${relativePath.replaceAll("\\", "/")}`;
+}
+
 // ── 主函数 ──────────────────────────────────────────────────
 
 /**
  * reloadModels — 选择性重载 model 定义
  *
  * 只重新加载变更的 model 定义文件，其他 model 保持不变。
- * 使用 monSQLize v1.1.8 的 Model.redefine() API 原子更新定义。
+ * 使用 monSQLize 3.3.0 registry API 与 VextJS app ownership 事务更新定义。
  *
  * 流程：
  *   1. 扫描 outDir/models/ 下所有 .js 文件
  *   2. 筛选出在 invalidation set 中的文件
- *   3. 保存受影响 model 的旧定义
- *   4. 逐个 require() 新模块 + Model.redefine() 更新
- *   5. 失败时回滚所有受影响 model
+ *   3. require/resolve 全部受影响 model，形成 validated plan
+ *   4. 一次提交全部 primary/alias key
+ *   5. commit 失败时按 journal 回滚；app close 时仅释放本 app key
  *
  * @param app VextApp 实例（需要 app.logger）
  * @param outDir 编译产物目录（.vext/dev/ 的绝对路径）
@@ -221,8 +212,13 @@ export async function reloadModels(
 
   // ── 1. 扫描所有 model 文件 ────────────────────────────
   const allModelFiles = await scanModelDirectory(modelsDir);
+  const affectedSources = new Set<string>();
+  for (const invalidatedFile of invalidated) {
+    const source = localModelSource(modelsDir, invalidatedFile);
+    if (source) affectedSources.add(source);
+  }
 
-  if (allModelFiles.length === 0) {
+  if (allModelFiles.length === 0 && affectedSources.size === 0) {
     app.logger.debug("[hot-reload] no models found, skipping model reload");
     return { reloaded: 0, unchanged: 0, reloadedNames: [] };
   }
@@ -256,7 +252,7 @@ export async function reloadModels(
   }
 
   // 如果没有 model 被影响，直接跳过
-  if (affectedFiles.length === 0) {
+  if (affectedFiles.length === 0 && affectedSources.size === 0) {
     app.logger.debug("[hot-reload] no models affected, skipping model reload");
     return {
       reloaded: 0,
@@ -268,174 +264,103 @@ export async function reloadModels(
   // ── 3. 获取 Model 静态类 ──────────────────────────────
   const ModelClass = await getModelClass();
 
-  // ── 4. 保存受影响 model 的旧定义（用于回滚）──────────
-  const previousModels: SavedModelEntry[] = [];
-  for (const file of affectedFiles) {
-    const relativePath = path.relative(modelsDir, file);
-
-    // 先加载当前文件获取 collectionName（需要用当前缓存版本）
-    // 但 cache 已被 invalidator 清除，所以用 derive 推断名称
-    // 并检查 Model.has() 确认是否已注册
-    const inferredName = deriveModelName(relativePath);
-
-    // 尝试获取旧定义（getDefinition 返回纯 definition 对象，非 registry entry）
-    const oldDefinition = ModelClass.has(inferredName)
-      ? ModelClass.getDefinition(inferredName)
-      : undefined;
-
-    previousModels.push({ name: inferredName, definition: oldDefinition });
-  }
-
-  // ── 5. 逐个重载受影响的 model ─────────────────────────
+  // ── 4. 导入并解析全部受影响文件，形成不可变提交计划 ───
+  const registrations: PlannedModelRegistration[] = [];
+  const plannedKeys = new Map<string, string>();
   const reloadedNames: string[] = [];
 
-  try {
-    for (let i = 0; i < affectedFiles.length; i++) {
-      const file = affectedFiles[i]!;
-      const relativePath = path.relative(modelsDir, file);
+  for (const file of affectedFiles) {
+    const relativePath = path.relative(modelsDir, file);
+    const source = localModelSource(modelsDir, file);
+    if (!source) {
+      throw new Error(
+        `[hot-reload] models/${relativePath} — compiled model path is outside the models boundary`,
+      );
+    }
+    affectedSources.add(source);
 
-      // 5.1 require() 新编译产物
-      //
-      // require.cache 已在前面被清除（cache-invalidator），
-      // 这里 require() 会从 .vext/dev/models/ 读取新编译的 .js。
-      //
-      const mod = esmRequire(file);
-
-      // 5.2 ESM/CJS interop 双层解包
-      //
-      // esbuild 将 ESM 编译为 CJS 时输出 { __esModule: true, default: { ... } }。
-      // Node.js require() 返回 module.exports 整体。
-      // 需要解包到真正的 definition 对象。
-      //
-      // 与 model-loader.ts loadLocalModels 保持一致。
-      //
-      // null / undefined 守卫（module.exports = null 时 mod 为 null）
-      if (mod == null) {
-        app.logger.warn(
-          `[hot-reload] models/${relativePath} — invalid export (expected default object), skipped`,
-        );
-        continue;
-      }
-
-      let definition = mod.default !== undefined ? mod.default : mod;
-      if (
-        definition &&
-        typeof definition === "object" &&
-        (definition as Record<string, unknown>).__esModule &&
-        (definition as Record<string, unknown>).default
-      ) {
-        definition = (definition as Record<string, unknown>).default;
-      }
-
-      if (
-        !definition ||
-        typeof definition !== "object" ||
-        Array.isArray(definition)
-      ) {
-        app.logger.warn(
-          `[hot-reload] models/${relativePath} — invalid export (expected default object), skipped`,
-        );
-        continue;
-      }
-
-      // 5.3 确定 registry key 和最终定义（N4 目录路由）
-      //
-      // 使用 resolveModelEntry 与 model-loader 保持完全一致的逻辑：
-      //   - 0-depth：registry key = def.collection ?? def.name ?? PascalCase(file)
-      //   - 1-depth：registry key = PascalCase(all), 自动注入 name + connection
-      //   - 2-depth：同上 + pool 路由
-      //   - >= 3 depth：跳过
-      //
-      const def = definition as Record<string, unknown>;
-      const entry = resolveModelEntry(relativePath, def);
-      if (!entry) {
-        const depthCount =
-          relativePath.replace(/\.\w+$/, "").split(/[/\\]/).length - 1;
-        app.logger.warn(
-          `[hot-reload] models/${relativePath} — directory depth ${depthCount} exceeds maximum (2), skipped`,
-        );
-        continue;
-      }
-      const { registryKey, finalDef } = entry;
-
-      // 5.4 更新保存的旧定义的 name（可能与 inferred 不同）
-      //
-      // inferredName（步骤 4 预先推断的）可能与 registryKey 不同，
-      // 仅在 0-depth 且定义有 collection/name 字段时会出现此差异。
-      // 此时需要重新获取旧定义，确保回滚使用正确的 name。
-      //
-      const savedEntry = previousModels[i]!;
-      if (savedEntry.name !== registryKey) {
-        savedEntry.name = registryKey;
-        savedEntry.definition = ModelClass.has(registryKey)
-          ? ModelClass.getDefinition(registryKey)
-          : undefined;
-      }
-
-      // 5.5 调用 Model.redefine() 更新定义
-      //
-      // redefine() 是 v1.1.8 新增 API，原子更新已注册的 model 定义。
-      // 如果 model 尚未注册（新文件），则使用 define() 注册。
-      //
-      if (ModelClass.has(registryKey)) {
-        ModelClass.redefine(registryKey, finalDef);
-      } else {
-        ModelClass.define(registryKey, finalDef);
-      }
-
-      reloadedNames.push(registryKey);
-      app.logger.debug(`[hot-reload] model "${registryKey}" reloaded`);
-
-      // R5：若配了 key 且与推断名不同，额外注册/更新别名
-      const aliasKey = def.key as string | undefined;
-      if (aliasKey && aliasKey !== registryKey) {
-        if (ModelClass.has(aliasKey)) {
-          ModelClass.redefine(aliasKey, finalDef);
-        } else {
-          ModelClass.define(aliasKey, finalDef);
-        }
-        app.logger.debug(`[hot-reload] model alias "${aliasKey}" reloaded`);
-      }
+    const mod = esmRequire(file);
+    if (mod == null) {
+      throw new Error(
+        `[hot-reload] models/${relativePath} — invalid export (expected default object)`,
+      );
     }
 
-    app.logger.info(
-      `[hot-reload] models reloaded: ${reloadedNames.length} changed` +
-        ` (${allModelFiles.length - reloadedNames.length} unchanged, kept)`,
-    );
+    let definition = mod.default !== undefined ? mod.default : mod;
+    if (
+      definition &&
+      typeof definition === "object" &&
+      (definition as Record<string, unknown>).__esModule &&
+      (definition as Record<string, unknown>).default
+    ) {
+      definition = (definition as Record<string, unknown>).default;
+    }
+    if (
+      !definition ||
+      typeof definition !== "object" ||
+      Array.isArray(definition)
+    ) {
+      throw new Error(
+        `[hot-reload] models/${relativePath} — invalid export (expected default object)`,
+      );
+    }
 
-    return {
-      reloaded: reloadedNames.length,
-      unchanged: allModelFiles.length - reloadedNames.length,
-      reloadedNames,
+    const def = definition as Record<string, unknown>;
+    const entry = resolveModelEntry(relativePath, def);
+    if (!entry) {
+      const depthCount =
+        relativePath.replace(/\.\w+$/, "").split(/[/\\]/).length - 1;
+      throw new Error(
+        `[hot-reload] models/${relativePath} — directory depth ${depthCount} exceeds maximum (2)`,
+      );
+    }
+
+    const primary: PlannedModelRegistration = {
+      key: entry.registryKey,
+      definition: entry.finalDef,
+      source,
     };
-  } catch (err) {
-    // ── 6. 回滚：恢复受影响的 model 到旧定义 ────────────
-    //
-    // 任何步骤失败时，将所有受影响的 model 恢复为旧定义。
-    // 这保证 Model 注册表的一致性：要么全部更新，要么全部回滚。
-    //
-    app.logger.error(
-      `[hot-reload] model reload failed, rolling back ${previousModels.length} model(s): ${(err as Error).message}`,
-    );
+    validateModelRegistration(primary);
+    if (plannedKeys.has(primary.key)) {
+      throw new Error(
+        `[hot-reload] models/${relativePath} — model key '${primary.key}' conflicts with ${plannedKeys.get(primary.key)}`,
+      );
+    }
+    plannedKeys.set(primary.key, source);
+    registrations.push(primary);
+    reloadedNames.push(primary.key);
 
-    for (const { name, definition } of previousModels) {
-      try {
-        if (definition !== undefined) {
-          // 旧定义存在 → 恢复为旧定义
-          ModelClass.redefine(name, definition);
-        } else {
-          // 旧定义不存在（新增的 model）→ 移除
-          ModelClass.undefine(name);
-        }
-      } catch (rollbackErr) {
-        // 回滚本身失败（极端情况），只记录日志
-        app.logger.error(
-          `[hot-reload] model rollback failed for "${name}": ${(rollbackErr as Error).message}`,
+    const aliasValue = def.key;
+    if (aliasValue !== undefined && aliasValue !== entry.registryKey) {
+      const alias: PlannedModelRegistration = {
+        key: aliasValue as string,
+        definition: entry.finalDef,
+        source,
+      };
+      validateModelRegistration(alias);
+      if (plannedKeys.has(alias.key)) {
+        throw new Error(
+          `[hot-reload] models/${relativePath} — model alias '${String(aliasValue)}' conflicts with ${plannedKeys.get(alias.key)}`,
         );
       }
+      plannedKeys.set(alias.key, source);
+      registrations.push(alias);
     }
-
-    // 向上抛出，由 soft reload 总流程处理
-    throw err;
   }
+
+  // ── 5. 单次提交；失败由共享 registry 事务完整回滚 ──────
+  replaceAppModelSources(ModelClass, app, affectedSources, registrations);
+  for (const name of reloadedNames) {
+    app.logger.debug(`[hot-reload] model "${name}" reloaded`);
+  }
+  app.logger.info(
+    `[hot-reload] models reloaded: ${reloadedNames.length} changed` +
+      ` (${allModelFiles.length - affectedFiles.length} unchanged, kept)`,
+  );
+
+  return {
+    reloaded: reloadedNames.length,
+    unchanged: allModelFiles.length - affectedFiles.length,
+    reloadedNames,
+  };
 }

@@ -549,37 +549,25 @@ export default defineMiddleware(
 ```
 
 ```typescript
-// src/auth/route-guards.ts
+// src/routes/posts.ts
 import type { RouteOptions } from "vextjs";
 
-export function requirePostUpdate(options: RouteOptions): RouteOptions {
-  return {
-    ...options,
-    middlewares: ["auth"],
-    auth: {
-      roles: ["admin"],
-      scopes: ["posts:write"],
-      permissions: [
-        { action: "post:update", resource: (req) => req.params.id },
-      ],
-      mode: "all",
-      security: "bearerAuth",
-    },
-  };
-}
+const updatePostOptions = {
+  middlewares: ["auth"],
+  auth: {
+    roles: ["admin"],
+    scopes: ["posts:write"],
+    permissions: [{ action: "post:update", resource: "POST:/api/posts/:id" }],
+    mode: "all",
+    security: "bearerAuth",
+  },
+  docs: { summary: "更新文章" },
+} satisfies RouteOptions;
+
+app.post("/posts/:id", updatePostOptions, handler);
 ```
 
-```typescript
-app.post(
-  "/posts/:id",
-  requirePostUpdate({
-    docs: { summary: "更新文章" },
-  }),
-  handler,
-);
-```
-
-只有一次性路由或底层 API reference 示例才建议直接写原始 `auth` 对象。真实应用里应把 middleware 名称、安全方案、角色、scope 和权限资源集中在本地 helper 中。
+构建索引接受最终内联对象，或 `updatePostOptions` 这种同文件 `const`。它不会执行 helper 函数体，因此会拒绝 route-options helper 调用。每条路由的完整保护合同应保持在这些可静态投影的形态中；可复用的运行时授权逻辑仍应放在 middleware 或 permission provider。
 
 ### 运行时 auth、OpenAPI security 与 Docs access
 

@@ -397,6 +397,31 @@ describe("buildRouteCacheMiddleware response-cache-kit delegation", () => {
     expect(String(firstRes._headers["Set-Cookie"])).toContain("vext.sid=");
   });
 
+  it("Session 持久化未决时不写入缓存", async () => {
+    const { middleware } = createMiddleware();
+    const req = createMockReq();
+    const firstRes = createMockRes();
+    const secondRes = createMockRes();
+    let count = 0;
+
+    await middleware(req, firstRes, async () => {
+      firstRes._onBeforeSend = () => {
+        firstRes._sessionCommitPending = true;
+      };
+      firstRes.json({ value: ++count }, 200);
+    });
+    await middleware(req, secondRes, async () => {
+      secondRes._onBeforeSend = () => {
+        secondRes._sessionCommitPending = true;
+      };
+      secondRes.json({ value: ++count }, 200);
+    });
+
+    expect(count).toBe(2);
+    expect(firstRes._headers["Cache-Control"]).toBe("no-store");
+    expect(secondRes._headers["Cache-Control"]).toBe("no-store");
+  });
+
   it("使用毫秒 TTL，并把 Cache-Control max-age 转成秒", async () => {
     vi.useFakeTimers();
     try {

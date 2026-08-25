@@ -367,6 +367,17 @@ export interface MonSQLizeDatabaseConfig {
      * @default true
      */
     autoRegister?: boolean;
+
+    /**
+     * Model discovery failure policy.
+     *
+     * `strict` fails application startup before any Model registry mutation.
+     * `lenient` explicitly opts into warning and skipping invalid imports or
+     * definitions; registry collisions and commit failures still fail closed.
+     *
+     * @default 'strict'
+     */
+    validation?: "strict" | "lenient";
   };
 
   /**

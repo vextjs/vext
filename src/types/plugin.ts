@@ -41,6 +41,11 @@ export interface VextPluginContext extends Pick<
   [key: string]: unknown;
 }
 
+export interface VextPluginSetupContext {
+  /** Aborted when setup fails or exceeds config.plugin.setupTimeout. */
+  readonly signal: AbortSignal;
+}
+
 /**
  * VextPlugin — 框架插件接口
  *
@@ -102,8 +107,12 @@ export interface VextPlugin {
    * 超时后自动 clearTimeout 并抛出错误。
    *
    * @param app 应用实例（此时 app.use() 可用，app.services 尚未注入）
+   * @param context setup 生命周期上下文；异步 I/O 应传递 context.signal
    */
-  setup(app: VextPluginContext): Promise<void> | void;
+  setup(
+    app: VextPluginContext,
+    context: VextPluginSetupContext,
+  ): Promise<void> | void;
 
   /**
    * 就绪钩子（可选）— HTTP 监听后执行

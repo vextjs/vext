@@ -190,6 +190,7 @@ export function createVextRequest(c: Context, app: VextApp): VextRequest {
   // 首次访问 getter 时执行解析并用 value descriptor 替换 getter（后续不重复解析）。
   //
 
+  const requestAbortController = new AbortController();
   const req: VextRequest = {
     // ── 占位符（立即被 defineProperty 覆盖）─────────────
     query: null as unknown as Record<string, string>,
@@ -207,6 +208,7 @@ export function createVextRequest(c: Context, app: VextApp): VextRequest {
 
     // ── 元信息 ──────────────────────────────────────────
     app,
+    signal: requestAbortController.signal,
     requestId: "", // requestId 中间件负责填充
     ip: resolveIp(c, trustProxy),
     protocol: resolveProtocol(c, trustProxy),
@@ -389,6 +391,10 @@ export function createVextRequest(c: Context, app: VextApp): VextRequest {
   } catch {
     // 某些环境下 close/abort 监听可能不可用，静默忽略
   }
+
+  addRequestCloseHandler(req, () => {
+    requestAbortController.abort(new Error("[vextjs] Request closed"));
+  });
 
   return req;
 }

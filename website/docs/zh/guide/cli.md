@@ -330,6 +330,7 @@ vext build && vext start
 - 保持源码目录结构
 - 默认生成 `.js` 和 `.js.map` 文件；不会在 `dist/` 中生成声明文件
 - 重复构建会自动移除已删除或重命名服务端源码留下的后端 stale 产物；`--clean` 表示先清空整个输出目录
+- 解析后的输出若是项目根、源码根或其父目录，破坏性清理会 fail closed；前端输出、资源目录、命名模式与 server outfile 也必须留在声明的构建边界内
 - 启用前端时，会生成 `dist/client/index.html`、`manifest.json`、`deploy-manifest.json`、`size-report.json`、静态资源与 client contract 产物
 - 使用 `--upload-assets` 时，会读取 `dist/client/deploy-manifest.json`，按 sha256 和 `frontend.deploy.upload.stateFile` 增量上传静态资源
 
@@ -494,6 +495,7 @@ vext doctor routes --write-inspect --write-manifest --json
 
 ### 当前边界
 
+- Route manifest 会携带 fingerprint 与源码文件清单。Doctor 默认只复用与当前 route source 匹配的 manifest，stale manifest 会重新构建；`--manifest-only` 是显式 snapshot 读取，不能与 `--refresh` 或 `--write-manifest` 组合。
 - 当前 route manifest 与 services manifest 仍分层维护，不合并为单一总 manifest；
 - `docs.operationId` 缺失时，doctor 会按 runtime 行为给出 `auto-operation-id` 信息提示，而不是误报 warning；
 - 路由侧仍由 `doctor routes --write-manifest` 负责；service 侧则由 `typegen --write-manifest` 负责。

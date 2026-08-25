@@ -56,6 +56,8 @@ function createRes(): VextResponse & { setCookies: string[] } {
     stream: vi.fn(),
     download: vi.fn(),
     redirect: vi.fn(),
+    _isSent: vi.fn(() => false),
+    _discardPendingSend: vi.fn(() => true),
     status: vi.fn(() => res),
     setHeader: vi.fn(() => res),
     cookie: vi.fn((name: string, value: string, options) => {
@@ -161,6 +163,67 @@ describe("session middleware", () => {
     expect(values.some((value) => value.startsWith(`vext.sid=${sid};`))).toBe(
       true,
     );
+  });
+
+  it("withholds the session cookie until async persistence succeeds", async () => {
+    let resolvePersistence!: () => void;
+    let markPersistenceStarted!: () => void;
+    const persistenceStarted = new Promise<void>((resolve) => {
+      markPersistenceStarted = resolve;
+    });
+    const persistence = new Promise<void>((resolve) => {
+      resolvePersistence = resolve;
+    });
+    const store = {
+      get: vi.fn(() => null),
+      set: vi.fn(() => {
+        markPersistenceStarted();
+        return persistence;
+      }),
+      delete: vi.fn(),
+    };
+    const middleware = session({ store, ttl: 60 });
+    const req = createReq();
+    const res = createRes();
+    const sentHeaders: Record<string, string | string[]> = {};
+    res.json = vi.fn((data: unknown, status = 200) => {
+      res._onBeforeSend?.("json", data, status, sentHeaders);
+    });
+
+    const running = middleware(req, res, async () => {
+      req.session!.userId = "u1";
+      res.json({ ok: true });
+    });
+    await persistenceStarted;
+
+    expect(sentHeaders["Set-Cookie"]).toBeUndefined();
+    expect(res.setCookies).toHaveLength(0);
+    expect(res._sessionCommitPending).toBe(true);
+
+    resolvePersistence();
+    await running;
+    expect(sentHeaders["Set-Cookie"]).toBeDefined();
+    expect(res.setCookies).toHaveLength(1);
+    expect(res._sessionCommitPending).toBe(false);
+  });
+
+  it("requires explicit session persistence before streaming", async () => {
+    const store = {
+      get: vi.fn(() => null),
+      set: vi.fn(),
+      delete: vi.fn(),
+    };
+    const req = createReq();
+    const res = createRes();
+
+    await expect(
+      session({ store })(req, res, async () => {
+        req.session!.userId = "u1";
+        res._onBeforeSend?.("stream", undefined, 200, {});
+      }),
+    ).rejects.toThrow("must await req.session.save() before stream");
+    expect(store.set).not.toHaveBeenCalled();
+    expect(res.setCookies).toHaveLength(0);
   });
 
   it("regenerates and destroys sessions", async () => {
@@ -308,6 +371,25 @@ describe("session middleware", () => {
     }
   });
 
+  it("opportunistically sweeps expired entries in bounded batches", () => {
+    vi.useFakeTimers();
+    try {
+      const store = createMemorySessionStore();
+      store.set("expired", { n: 0 }, 1);
+      vi.advanceTimersByTime(1001);
+      const sweep = vi.spyOn(store, "clearExpired");
+
+      for (let index = 0; index < 63; index += 1) {
+        store.set(`live-${index}`, { index }, 60);
+      }
+
+      expect(sweep).toHaveBeenCalledWith(32);
+      expect(store.size()).toBe(63);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("auto runtime follows global and route-level enablement", async () => {
     const store = createMemorySessionStore();
     const runtime = createConfiguredSessionRuntime({ enabled: false, store });
@@ -404,7 +486,7 @@ describe("session middleware", () => {
     expect(await store.get(sid)).toEqual({ userId: "u1" });
   });
 
-  it("logs post-send store failures instead of causing a second response", async () => {
+  it("discards a staged success response when session persistence fails", async () => {
     const req = createReq();
     const res = createRes();
     const store = {
@@ -414,8 +496,9 @@ describe("session middleware", () => {
       }),
       delete: vi.fn(),
     };
+    const sentHeaders: Record<string, string | string[]> = {};
     res.json = vi.fn((data: unknown, status = 200) => {
-      res._onBeforeSend?.("json", data, status, {});
+      res._onBeforeSend?.("json", data, status, sentHeaders);
     });
 
     await expect(
@@ -423,11 +506,10 @@ describe("session middleware", () => {
         req.session!.userId = "u1";
         res.json({ ok: true });
       }),
-    ).resolves.toBeUndefined();
+    ).rejects.toThrow("store unavailable");
 
-    expect(req.app.logger.error).toHaveBeenCalledWith(
-      { error: "store unavailable" },
-      expect.stringContaining("session commit failed"),
-    );
+    expect(res._discardPendingSend).toHaveBeenCalledOnce();
+    expect(sentHeaders["Set-Cookie"]).toBeUndefined();
+    expect(res.setCookies).toHaveLength(0);
   });
 });

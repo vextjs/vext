@@ -323,6 +323,12 @@ export interface VextFrontendSitemapConfig {
   includeStatic?: boolean;
   entries?: VextSitemapEntriesProvider;
   maxUrlsPerFile?: number;
+  /** Maximum URLs accepted across the complete sitemap set. */
+  maxUrls?: number;
+  /** Maximum UTF-8 bytes across the rendered sitemap documents. */
+  maxBytes?: number;
+  /** Runtime provider/read/render deadline in milliseconds. */
+  timeoutMs?: number;
 }
 
 export interface VextRobotsGroup {
@@ -364,6 +370,9 @@ export interface ResolvedVextFrontendSeoConfig {
         includeStatic: boolean;
         entries?: VextSitemapEntriesProvider;
         maxUrlsPerFile: number;
+        maxUrls: number;
+        maxBytes: number;
+        timeoutMs: number;
       };
   robots:
     | false

@@ -2,6 +2,8 @@
 
 VextJS 内置了完整的测试工具，通过 `vextjs/testing` 子路径导入。无需启动真实 HTTP 服务器，即可对路由、中间件、服务进行端到端测试。
 
+ESM `import` 与 CommonJS `require()` 均受支持。根入口和公开子路径共享运行时身份：例如通过 `vextjs/testing` 创建的错误仍满足 `instanceof require("vextjs").HttpError`，logger 生命周期元数据也可跨这些入口读取。
+
 ## 快速开始
 
 ```typescript

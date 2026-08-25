@@ -12,6 +12,8 @@ export interface RouteManifestPayload {
   schemaVersion: 1;
   kind: "routes-manifest";
   target: "routes";
+  sourceFingerprint: string;
+  sourceFiles: string[];
   routeFileCount: number;
   routeCount: number;
   summary: {

@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import type {
   ResolvedVextFrontendConfig,
   VextFrontendDeployManifestAsset,
@@ -9,6 +8,7 @@ import type {
 import { createFilesystemDeployAdapter } from "./adapters/filesystem.js";
 import { createMockDeployAdapter } from "./adapters/mock.js";
 import { joinUploadKey } from "./manifest.js";
+import { readFrontendDeployManifestFile } from "./manifest-validator.js";
 import { createFrontendDeployPlan } from "./planner.js";
 import { writeFrontendDeployState } from "./state.js";
 
@@ -23,9 +23,7 @@ export async function deployFrontendAssets(
   options: DeployFrontendAssetsOptions,
 ): Promise<VextFrontendDeployResult> {
   const manifest = applyDeployConfigOverrides(
-    JSON.parse(
-      await readFile(options.manifestPath, "utf-8"),
-    ) as VextFrontendDeployManifest,
+    await readFrontendDeployManifestFile(options.manifestPath),
     options.config,
   );
   const dryRun = options.dryRun ?? options.config.deploy.upload.dryRun;
@@ -35,6 +33,7 @@ export async function deployFrontendAssets(
     options.manifestPath,
   );
   const adapter = options.adapter ?? resolveDeployAdapter(options.config);
+  const validatedAssets = plan.items.map((item) => item.asset);
   const uploadedAssets: VextFrontendDeployManifestAsset[] = [];
   const confirmedStateUploadKeys = new Set<string>();
   const assets: VextFrontendDeployResult["assets"] = [];
@@ -74,7 +73,7 @@ export async function deployFrontendAssets(
   if (!dryRun) {
     await writeFrontendDeployState(
       options.config.deploy.upload.stateFile,
-      manifest.assets.filter((asset) =>
+      validatedAssets.filter((asset) =>
         confirmedStateUploadKeys.has(asset.uploadKey),
       ),
     );
@@ -106,7 +105,6 @@ function applyDeployConfigOverrides(
     upload: {
       ...manifest.upload,
       prefix,
-      stateFile: config.deploy.upload.stateFile,
       dryRun: config.deploy.upload.dryRun,
     },
     assets: manifest.assets.map((asset) => ({

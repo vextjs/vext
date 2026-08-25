@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { constants, existsSync } from "node:fs";
 import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -49,12 +50,19 @@ export async function writeFrontendSeoArtifacts(
       );
     }
     const entries = await collectBuildSitemapEntries(options);
-    for (const document of renderSitemapDocuments(
+    const documents = renderSitemapDocuments(
       entries,
       seo.publicOrigin,
       seo.sitemap.path,
       seo.sitemap.maxUrlsPerFile,
-    )) {
+    );
+    assertSitemapResourceLimits(
+      entries,
+      documents,
+      seo.sitemap.maxUrls,
+      seo.sitemap.maxBytes,
+    );
+    for (const document of documents) {
       files.set(document.pathname, {
         pathname: document.pathname,
         content: document.content,
@@ -71,7 +79,7 @@ export async function writeFrontendSeoArtifacts(
     }
     const sitemapUrl =
       seo.sitemap !== false
-        ? `${new URL(seo.publicOrigin).origin}${seo.sitemap.path}`
+        ? joinPublicUrl(seo.publicOrigin, seo.sitemap.path)
         : undefined;
     files.set(seo.robots.path, {
       pathname: seo.robots.path,
@@ -330,13 +338,35 @@ export function renderSitemapDocuments(
   return [
     {
       pathname: sitemapPath,
-      content: renderSitemapIndex(chunkPaths, new URL(origin).origin),
+      content: renderSitemapIndex(chunkPaths, origin),
     },
     ...chunks.map((chunk, index) => ({
       pathname: chunkPaths[index]!,
       content: renderUrlSet(chunk, origin),
     })),
   ];
+}
+
+export function assertSitemapResourceLimits(
+  entries: readonly VextSitemapEntry[],
+  documents: ReadonlyArray<{ content: string }>,
+  maxUrls: number,
+  maxBytes: number,
+): void {
+  if (entries.length > maxUrls) {
+    throw new Error(
+      `[vextjs] sitemap contains ${entries.length} URLs, exceeding config.frontend.seo.sitemap.maxUrls (${maxUrls}).`,
+    );
+  }
+  const renderedBytes = documents.reduce(
+    (total, document) => total + Buffer.byteLength(document.content, "utf-8"),
+    0,
+  );
+  if (renderedBytes > maxBytes) {
+    throw new Error(
+      `[vextjs] rendered sitemap documents contain ${renderedBytes} UTF-8 bytes, exceeding config.frontend.seo.sitemap.maxBytes (${maxBytes}).`,
+    );
+  }
 }
 
 export function renderRobotsTxt(
@@ -410,7 +440,7 @@ function renderSitemapIndex(
 ): string {
   const entries = paths.map(
     (pathname) =>
-      `  <sitemap><loc>${escapeXml(`${rootOrigin}${pathname}`)}</loc></sitemap>`,
+      `  <sitemap><loc>${escapeXml(joinPublicUrl(rootOrigin, pathname))}</loc></sitemap>`,
   );
   return `<?xml version="1.0" encoding="UTF-8"?>\n<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${entries.join("\n")}\n</sitemapindex>\n`;
 }

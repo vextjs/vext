@@ -4,10 +4,17 @@ import type { VextRequest } from "../../../src/types/request.js";
 import type { VextResponse } from "../../../src/types/response.js";
 
 function createContext() {
-  const req = { requestId: "req-timeout" } as VextRequest;
+  let sent = false;
+  const req = {
+    requestId: "req-timeout",
+    signal: new AbortController().signal,
+    app: { logger: { error: vi.fn() } },
+  } as unknown as VextRequest;
   const res = {
-    rawJson: vi.fn(),
-    _isSent: vi.fn(() => false),
+    rawJson: vi.fn(() => {
+      sent = true;
+    }),
+    _isSent: vi.fn(() => sent),
   } as unknown as VextResponse;
   return { req, res };
 }
@@ -28,6 +35,7 @@ describe("route timeout middleware", () => {
       );
 
       await vi.advanceTimersByTimeAsync(50);
+      await running;
       expect(res.rawJson).toHaveBeenCalledWith(
         {
           code: 504,
@@ -36,9 +44,38 @@ describe("route timeout middleware", () => {
         },
         504,
       );
+      expect(req.signal.aborted).toBe(true);
 
       release();
+      await Promise.resolve();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("settles at the deadline and exposes cooperative cancellation", async () => {
+    vi.useFakeTimers();
+    try {
+      const { req, res } = createContext();
+      let release!: () => void;
+      let lateWriteCommitted = false;
+      const running = createRouteTimeoutMiddleware(25)(req, res, async () => {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        if (!req.signal.aborted) {
+          lateWriteCommitted = true;
+        }
+      });
+
+      await vi.advanceTimersByTimeAsync(25);
       await running;
+      expect(req.signal.aborted).toBe(true);
+      expect(res.rawJson).toHaveBeenCalledTimes(1);
+
+      release();
+      await Promise.resolve();
+      expect(lateWriteCommitted).toBe(false);
     } finally {
       vi.useRealTimers();
     }

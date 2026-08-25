@@ -405,6 +405,13 @@ export function createVextResponse(
       });
     },
 
+    _discardPendingSend(): boolean {
+      if (_flushed) return false;
+      _pending = null;
+      _sent = false;
+      return true;
+    },
+
     _flush(): void {
       flushPending();
     },

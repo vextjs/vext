@@ -25,6 +25,8 @@ Production builds use content-hashed output so browsers and CDNs can cache aggre
 
 The frontend static mount sends `ETag` and `Last-Modified` validators. Conditional `If-None-Match` and `If-Modified-Since` requests can return `304` without an entity body.
 
+Static request paths are canonicalized before filesystem access. Absolute or encoded traversal paths are rejected, and a symbolic link that resolves outside the configured static root is never served.
+
 ## Public Files
 
 ```text
@@ -59,6 +61,8 @@ This changes generated asset URLs. Upload is controlled separately by `frontend.
 ## Incremental Upload
 
 `deploy-manifest.json` plus sha256 state lets Vext skip unchanged images, fonts, JS, CSS, and public files. This is the default path for enterprise releases where large media files should not be re-uploaded every build.
+
+The deploy manifest is treated as untrusted input. Every asset path must be normalized, relative, unique, and contained by the frontend output in both lexical and realpath terms. Absolute/traversal entries, escaping symbolic links, duplicate upload keys, or size/sha256 drift stop planning and upload before any asset is transferred.
 
 ## Local Media Pipeline
 

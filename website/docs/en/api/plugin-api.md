@@ -112,24 +112,29 @@ Circular dependencies can cause startup failure:
 
 :::
 
-### `setup(app)`
+### `setup(app, context)`
 
 The plug-in initialization function is called by `plugin-loader` in step ② of `bootstrap`.
 
 ```typescript
-setup(app: VextApp): Promise<void> | void;
+setup(
+  app: VextPluginContext,
+  context: VextPluginSetupContext,
+): Promise<void> | void;
 ```
 
 **Parameters**:
 
-| Parameters | Type      | Description                                                                                            |
-| ---------- | --------- | ------------------------------------------------------------------------------------------------------ |
-| `app`      | `VextApp` | Application instance (at this time `app.use()` is available, `app.services` has not been injected yet) |
+| Parameters | Type                     | Description                                                                                   |
+| ---------- | ------------------------ | --------------------------------------------------------------------------------------------- |
+| `app`      | `VextPluginContext`      | Revocable setup facade; `app.use()` is available and `app.services` has not been injected yet |
+| `context`  | `VextPluginSetupContext` | Setup lifecycle context containing `signal: AbortSignal` for cancellable I/O                  |
 
 **Key Notes**:
 
 - Can be a synchronous or asynchronous function
-- `plugin-loader` sets **timeout protection** (default 30 seconds) for each `setup()` and throws an error after timeout
+- `plugin-loader` sets a **hard timeout** (default 30 seconds) for each `setup()`; timeout aborts `context.signal`, rolls back setup-time framework mutations, and revokes the setup facade before throwing
+- A late asynchronous continuation cannot commit framework state; plugins must still cancel and close external resources they created
 - Execution order is determined by `dependencies` topological sorting
 - `app.services` has not been injected when `setup()` is executed (`service-loader` is executed after `plugin-loader`), and the service cannot be accessed
 - If the plugin object declares `onReady(app)` / `onClose(app)`, `plugin-loader` will automatically register these two life cycle hooks after `setup()` is successful.

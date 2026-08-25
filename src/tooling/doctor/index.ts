@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   buildRouteIndex,
+  createRouteSourceSnapshot,
   type RouteIndexEntry,
 } from "../project-index/scan-routes.js";
 import { inferOperationId } from "../../lib/openapi/operation-id.js";
@@ -48,6 +49,8 @@ export interface RunDoctorOptions {
   writeInspect?: boolean;
   writeManifest?: boolean;
   refresh?: boolean;
+  /** Read the stored manifest as an explicit snapshot, even when stale. */
+  manifestOnly?: boolean;
 }
 
 export interface DoctorSummary {
@@ -86,6 +89,8 @@ export interface DoctorResult {
   routes: DoctorRouteRecord[];
   inspect?: GeneratedFileResult;
   manifest?: GeneratedFileResult;
+  sourceFingerprint: string;
+  sourceFiles: string[];
 }
 
 export async function runDoctor(
@@ -94,11 +99,30 @@ export async function runDoctor(
   const target = options.target ?? "routes";
   const writeInspect = options.writeInspect ?? false;
   const writeManifest = options.writeManifest ?? false;
-  const routeEntries =
-    options.refresh === true
-      ? await buildRouteIndex(options.rootDir)
-      : (readRouteEntriesFromManifest(options.rootDir) ??
-        (await buildRouteIndex(options.rootDir)));
+  if (options.manifestOnly && writeManifest) {
+    throw new Error(
+      "[vextjs] doctor --manifest-only cannot be combined with --write-manifest because a stale snapshot must not be re-attested as current.",
+    );
+  }
+  const sourceSnapshot = await createRouteSourceSnapshot(options.rootDir);
+  let routeEntries: RouteIndexEntry[];
+  if (options.manifestOnly) {
+    const snapshot = readRouteEntriesFromManifest(options.rootDir);
+    if (!snapshot) {
+      throw new Error(
+        "[vextjs] doctor --manifest-only requires an existing .vext/manifest/routes.json snapshot.",
+      );
+    }
+    routeEntries = snapshot;
+  } else if (options.refresh === true) {
+    routeEntries = await buildRouteIndex(options.rootDir);
+  } else {
+    routeEntries =
+      readRouteEntriesFromManifest(
+        options.rootDir,
+        sourceSnapshot.fingerprint,
+      ) ?? (await buildRouteIndex(options.rootDir));
+  }
   const diagnostics = analyzeRoutes(routeEntries);
   const routes = routeEntries.map((entry) => toDoctorRouteRecord(entry));
   const summary = summarizeDiagnostics(diagnostics);
@@ -116,7 +140,7 @@ export async function runDoctor(
   const manifest = writeManifest
     ? await writeRouteManifestFile(
         options.rootDir,
-        buildRouteManifestPayload(routes, diagnostics),
+        buildRouteManifestPayload(routes, diagnostics, sourceSnapshot),
       )
     : undefined;
 
@@ -130,11 +154,14 @@ export async function runDoctor(
     routes,
     inspect,
     manifest,
+    sourceFingerprint: sourceSnapshot.fingerprint,
+    sourceFiles: sourceSnapshot.files,
   };
 }
 
 function readRouteEntriesFromManifest(
   rootDir: string,
+  expectedFingerprint?: string,
 ): RouteIndexEntry[] | null {
   const manifestPath = join(rootDir, ".vext", "manifest", "routes.json");
   if (!existsSync(manifestPath)) {
@@ -142,6 +169,7 @@ function readRouteEntriesFromManifest(
   }
 
   const payload = JSON.parse(readFileSync(manifestPath, "utf-8")) as {
+    sourceFingerprint?: string;
     routes?: Array<{
       fileRelativePath?: string;
       source?: string;
@@ -159,6 +187,12 @@ function readRouteEntriesFromManifest(
       freshness?: VextRouteFreshnessIdentity;
     }>;
   };
+  if (
+    expectedFingerprint !== undefined &&
+    payload.sourceFingerprint !== expectedFingerprint
+  ) {
+    return null;
+  }
 
   return (payload.routes ?? [])
     .map((route) => {
@@ -345,6 +379,7 @@ function summarizeDiagnostics(diagnostics: DoctorDiagnostic[]): DoctorSummary {
 function buildRouteManifestPayload(
   routes: DoctorRouteRecord[],
   diagnostics: DoctorDiagnostic[],
+  sourceSnapshot: { fingerprint: string; files: string[] },
 ): RouteManifestPayload {
   const missingDocsSummary = diagnostics.filter(
     (item) => item.code === "missing-docs-summary",
@@ -368,6 +403,8 @@ function buildRouteManifestPayload(
     schemaVersion: 1,
     kind: "routes-manifest",
     target: "routes",
+    sourceFingerprint: sourceSnapshot.fingerprint,
+    sourceFiles: sourceSnapshot.files,
     routeFileCount: new Set(routes.map((item) => item.fileRelativePath)).size,
     routeCount: routes.length,
     summary: {

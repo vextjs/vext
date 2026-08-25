@@ -237,6 +237,7 @@ export function createVextRequest(
   // 对象形状在创建时即确定，V8 可保持快速属性模式（Hidden Class 优化）。
   //
 
+  const requestAbortController = new AbortController();
   const req: VextRequest = {
     // ── 原始数据 ────────────────────────────────────────
     // P1 优化：query 先用 getter 懒解析，首次访问后物化为 value property。
@@ -272,6 +273,7 @@ export function createVextRequest(
 
     // ── 元信息 ──────────────────────────────────────────
     app,
+    signal: requestAbortController.signal,
     requestId: "", // requestId 中间件负责填充
     ip,
     protocol,
@@ -304,6 +306,10 @@ export function createVextRequest(
   // Host close + finishResponseSend both fire exactly-once shared handlers.
   incoming.on("close", () => {
     fireRequestCloseHandlers(req);
+  });
+
+  addRequestCloseHandler(req, () => {
+    requestAbortController.abort(new Error("[vextjs] Request closed"));
   });
 
   return req;

@@ -160,6 +160,7 @@ export function createVextRequest(
 
   // ── 构造 VextRequest 对象 ────────────────────────────────
 
+  const requestAbortController = new AbortController();
   const req: VextRequest = {
     // ── 原始数据 ────────────────────────────────────────
     query: queryRecord,
@@ -185,6 +186,7 @@ export function createVextRequest(
 
     // ── 元信息 ──────────────────────────────────────────
     app: vextApp,
+    signal: requestAbortController.signal,
     requestId: "", // requestId 中间件负责填充
     ip,
     protocol,
@@ -217,6 +219,10 @@ export function createVextRequest(
   // Host close + finishResponseSend both fire exactly-once shared handlers.
   ctx.req.on("close", () => {
     fireRequestCloseHandlers(req);
+  });
+
+  addRequestCloseHandler(req, () => {
+    requestAbortController.abort(new Error("[vextjs] Request closed"));
   });
 
   return req;

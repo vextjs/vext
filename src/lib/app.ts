@@ -118,6 +118,30 @@ export interface AppInternals {
   getRequestIdGenerator(): (() => string) | null;
 }
 
+export interface AppMutationTransaction {
+  commit(): void;
+  rollback(): void;
+}
+
+const appMutationTransactionFactories = new WeakMap<
+  VextApp,
+  () => AppMutationTransaction
+>();
+
+/**
+ * Captures the framework-owned mutable app state used during plugin setup.
+ * The fallback descriptor snapshot keeps direct loadPlugins() consumers safe;
+ * createApp() instances additionally restore closure-backed registries.
+ */
+export function beginAppMutationTransaction(
+  app: VextApp,
+): AppMutationTransaction {
+  return (
+    appMutationTransactionFactories.get(app)?.() ??
+    createDescriptorMutationTransaction(app)
+  );
+}
+
 /**
  * createApp — 框架应用工厂函数
  *
@@ -394,6 +418,45 @@ export function createApp(config: VextConfig): {
     ) as unknown as VextFetch,
   };
 
+  appMutationTransactionFactories.set(app, () => {
+    const descriptors = captureOwnDescriptors(app);
+    const closeHooksLength = closeHooks.length;
+    const readyHooksLength = readyHooks.length;
+    const middlewaresLength = globalMiddlewares.length;
+    const validator = _validator;
+    const rateLimiter = _rateLimiter;
+    const requestIdGenerator = _requestIdGenerator;
+    let settled = false;
+
+    return {
+      commit() {
+        settled = true;
+      },
+      rollback() {
+        if (settled) return;
+        settled = true;
+        restoreOwnDescriptors(app, descriptors);
+        closeHooks.length = closeHooksLength;
+        readyHooks.length = readyHooksLength;
+        globalMiddlewares.length = middlewaresLength;
+        _validator = validator;
+        _rateLimiter = rateLimiter;
+        _requestIdGenerator = requestIdGenerator;
+        if (!descriptors.has(RATE_LIMITER_OVERRIDDEN_KEY)) {
+          const descriptor = Object.getOwnPropertyDescriptor(
+            app,
+            RATE_LIMITER_OVERRIDDEN_KEY,
+          );
+          if (descriptor && !descriptor.configurable) {
+            Object.defineProperty(app, RATE_LIMITER_OVERRIDDEN_KEY, {
+              value: false,
+            });
+          }
+        }
+      },
+    };
+  });
+
   // ── adapter 延迟赋值 ──────────────────────────────────────
   // adapter 不再在 createApp 中同步解析，而是由 bootstrap / devBootstrap / createTestApp
   // 在 createApp 之后异步调用 resolveAdapter 并赋值到 app.adapter。
@@ -557,6 +620,55 @@ export function createApp(config: VextConfig): {
   };
 
   return { app, internals };
+}
+
+function createDescriptorMutationTransaction(
+  app: VextApp,
+): AppMutationTransaction {
+  const descriptors = captureOwnDescriptors(app);
+  let settled = false;
+  return {
+    commit() {
+      settled = true;
+    },
+    rollback() {
+      if (settled) return;
+      settled = true;
+      restoreOwnDescriptors(app, descriptors);
+    },
+  };
+}
+
+function captureOwnDescriptors(
+  value: object,
+): Map<PropertyKey, PropertyDescriptor> {
+  return new Map(
+    Reflect.ownKeys(value).map((key) => [
+      key,
+      Object.getOwnPropertyDescriptor(value, key)!,
+    ]),
+  );
+}
+
+function restoreOwnDescriptors(
+  value: object,
+  descriptors: ReadonlyMap<PropertyKey, PropertyDescriptor>,
+): void {
+  for (const key of Reflect.ownKeys(value)) {
+    if (descriptors.has(key)) continue;
+    const current = Object.getOwnPropertyDescriptor(value, key);
+    if (current?.configurable) Reflect.deleteProperty(value, key);
+  }
+  for (const [key, descriptor] of descriptors) {
+    const current = Object.getOwnPropertyDescriptor(value, key);
+    if (!current || current.configurable) {
+      Object.defineProperty(value, key, descriptor);
+      continue;
+    }
+    if ("value" in descriptor && current.writable) {
+      Reflect.set(value, key, descriptor.value);
+    }
+  }
 }
 
 // ── 辅助函数 ────────────────────────────────────────────────

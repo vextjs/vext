@@ -48,7 +48,7 @@ app.get("/health", async (_req, res) => {
 | ------------- | --------------------------------------------- |
 | `validate`    | 参数校验规则（query / body / param / header） |
 | `middlewares` | 路由级中间件引用                              |
-| `auth`        | 路由保护契约，通常由本地 helper 统一封装      |
+| `auth`        | 路由保护契约；内联或使用同文件最终 `const`    |
 | `session`     | 路由级 Session 启用、关闭或行为覆盖           |
 | `csrf`        | 路由级 CSRF 跳过                              |
 | `docs`        | OpenAPI 文档配置                              |

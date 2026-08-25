@@ -1,11 +1,18 @@
 import { existsSync, readFileSync } from "node:fs";
-import { extname, join, relative, sep } from "node:path";
+import { basename, extname, join, relative, sep } from "node:path";
 import fg from "fast-glob";
 import {
+  isUnsupportedCommonJsRouteFileName,
   ROUTE_IGNORE_PATTERNS,
   ROUTE_SOURCE_PATTERNS,
   shouldIncludeRouteFilePath,
 } from "../../lib/route-file-policy.js";
+import {
+  assertCanonicalRouteFactoryBody,
+  createCanonicalRouteIdentity,
+  normalizeRegisteredRoutePath,
+  VEXT_ROUTE_METHODS,
+} from "../../lib/route-contract.js";
 import { detectRouteSourceDocsKind } from "../../lib/openapi/route-docs-kind.js";
 import { SchemaConverter } from "../../lib/openapi/schema-converter.js";
 import type { VextOpenAPIDocsKind } from "../../lib/openapi/types.js";
@@ -31,15 +38,7 @@ import type {
   RouteOptions,
   VextRouteFrontendOptions,
 } from "../../types/app.js";
-const HTTP_METHODS = [
-  "get",
-  "post",
-  "put",
-  "patch",
-  "delete",
-  "head",
-  "options",
-];
+const HTTP_METHODS = [...VEXT_ROUTE_METHODS];
 
 const schemaConverter = new SchemaConverter();
 const NO_CANONICAL_FIELD_BUILDER = Symbol("no-canonical-field-builder");
@@ -95,6 +94,36 @@ export interface RouteIndexEntry {
   freshness: VextRouteFreshnessIdentity;
 }
 
+export interface RouteSourceSnapshot {
+  fingerprint: string;
+  files: string[];
+}
+
+export async function createRouteSourceSnapshot(
+  rootDir: string,
+): Promise<RouteSourceSnapshot> {
+  const routesDir = join(rootDir, "src", "routes");
+  if (!existsSync(routesDir)) {
+    return { fingerprint: createDigest([]), files: [] };
+  }
+  const routeFiles = (
+    await fg(ROUTE_SOURCE_PATTERNS, {
+      cwd: routesDir,
+      absolute: true,
+      onlyFiles: true,
+      ignore: ROUTE_IGNORE_PATTERNS,
+    })
+  ).sort((left, right) => left.localeCompare(right));
+  const sources = routeFiles.map((filePath) => ({
+    file: relative(rootDir, filePath).split(sep).join("/"),
+    content: readFileSync(filePath, "utf-8"),
+  }));
+  return {
+    fingerprint: createDigest(sources),
+    files: sources.map((source) => source.file),
+  };
+}
+
 export async function buildRouteIndex(
   rootDir: string,
 ): Promise<RouteIndexEntry[]> {
@@ -103,19 +132,35 @@ export async function buildRouteIndex(
     return [];
   }
 
-  const routeFiles = await fg(ROUTE_SOURCE_PATTERNS, {
-    cwd: routesDir,
-    absolute: true,
-    onlyFiles: true,
-    ignore: ROUTE_IGNORE_PATTERNS,
-  });
+  const routeFiles = (
+    await fg(ROUTE_SOURCE_PATTERNS, {
+      cwd: routesDir,
+      absolute: true,
+      onlyFiles: true,
+      ignore: ROUTE_IGNORE_PATTERNS,
+    })
+  ).sort((left, right) => left.localeCompare(right));
+  const commonJsRoute = routeFiles.find((filePath) =>
+    isUnsupportedCommonJsRouteFileName(basename(filePath)),
+  );
+  if (commonJsRoute) {
+    throw routeModuleError(
+      relative(rootDir, commonJsRoute).split(sep).join("/"),
+      "uses unsupported CommonJS route source; convert it to TypeScript or an ESM .js/.mjs module",
+    );
+  }
 
-  return routeFiles
+  const includedFiles = routeFiles
     .filter((filePath) => shouldIncludeRouteFilePath(filePath, routesDir))
+    .sort((left, right) => left.localeCompare(right));
+  assertUniqueRouteFilePrefixes(includedFiles, rootDir, routesDir);
+  const entries = includedFiles
     .flatMap((filePath) => scanRouteEntries(filePath, rootDir, routesDir))
     .sort((a, b) =>
       `${a.method} ${a.path}`.localeCompare(`${b.method} ${b.path}`),
     );
+  assertUniqueRouteEntries(entries);
+  return entries;
 }
 
 function scanRouteEntries(
@@ -132,6 +177,11 @@ function scanRouteEntries(
   for (const block of [
     findDefaultExportedDefineRoutesBlock(source, fileRelativePath),
   ]) {
+    const expectedRegistrations = assertCanonicalRouteFactoryBody(
+      block.paramName,
+      block.body,
+      fileRelativePath,
+    );
     const methodPattern = new RegExp(
       `(?<![\\w$.])${escapeRegExp(block.paramName)}\\.(${HTTP_METHODS.join("|")})\\s*\\(`,
       "gu",
@@ -162,13 +212,19 @@ function scanRouteEntries(
       const args = splitTopLevelArgs(
         block.body.slice(openParen + 1, closeParen),
       );
+      if (args.length !== 2 && args.length !== 3) {
+        throw projectionError(
+          baseContext,
+          "route call must use app.method(path, handler) or app.method(path, options, handler)",
+        );
+      }
       const routePath = readStaticStringExpression(
         args[0],
         staticContext,
         baseContext,
         "route path expression must be statically resolvable",
       );
-      const normalizedPath = normalizeRoutePath(prefix, routePath);
+      const normalizedPath = normalizeRegisteredRoutePath(prefix, routePath);
       const context: RouteProjectionContext = {
         ...baseContext,
         routePath: normalizedPath,
@@ -210,7 +266,16 @@ function scanRouteEntries(
         operationId: docs.operationId,
         tags: docs.tags,
         hidden: docs.hidden,
-        docsKind: detectRouteSourceDocsKind(handler),
+        docsKind:
+          frontend !== undefined
+            ? "frontend-route"
+            : detectRouteSourceDocsKind(
+                resolveStaticExpressionSource(
+                  handler ?? "",
+                  staticContext,
+                  `${formatProjectionContext(context)} route handler`,
+                ),
+              ),
         schema: createRouteSchemaContract(
           optionsObject,
           responses,
@@ -221,9 +286,48 @@ function scanRouteEntries(
         freshness: createRouteFreshnessIdentity({ frontend }),
       });
     }
+    if (entries.length !== expectedRegistrations) {
+      throw routeModuleError(
+        fileRelativePath,
+        "contains a route registration that the canonical static projector could not represent",
+      );
+    }
   }
 
   return entries;
+}
+
+function assertUniqueRouteFilePrefixes(
+  routeFiles: readonly string[],
+  rootDir: string,
+  routesDir: string,
+): void {
+  const owners = new Map<string, string>();
+  for (const filePath of routeFiles) {
+    const prefix = filePathToRoutePrefix(filePath, routesDir);
+    const identity = prefix.toLocaleLowerCase("en-US");
+    const existing = owners.get(identity);
+    if (existing) {
+      throw new Error(
+        `[vextjs] Route prefix conflict detected for "${prefix}": ${relative(rootDir, existing).split(sep).join("/")} and ${relative(rootDir, filePath).split(sep).join("/")} map to the same route ownership boundary.`,
+      );
+    }
+    owners.set(identity, filePath);
+  }
+}
+
+function assertUniqueRouteEntries(entries: readonly RouteIndexEntry[]): void {
+  const owners = new Map<string, RouteIndexEntry>();
+  for (const entry of entries) {
+    const identity = createCanonicalRouteIdentity(entry.method, entry.path);
+    const existing = owners.get(identity);
+    if (existing) {
+      throw new Error(
+        `[vextjs] Duplicate route identity ${entry.method.toUpperCase()} ${entry.path}: ${existing.fileRelativePath} conflicts with ${entry.fileRelativePath}. Route paths are compared without trailing slashes and without case differences for cross-adapter safety.`,
+      );
+    }
+    owners.set(identity, entry);
+  }
 }
 
 /** Statically projects the finite RouteOptions.frontend grammar. */
@@ -356,14 +460,19 @@ function collectTopLevelConstBindings(
 ): ConstBindingContext {
   const bindings = new Map<string, string>();
   const ambiguousBindings = new Set<string>();
-  const pattern = /\bconst\s+([A-Za-z_$][\w$]*)\s*=/gu;
-
+  const pattern = /\bconst\s+([A-Za-z_$][\w$]*)\b/gu;
   for (const match of masked.matchAll(pattern)) {
     if (!isTopLevelAt(masked, match.index!)) continue;
     const name = match[1]!;
-    const start = match.index! + match[0].length;
-    const end = findStaticExpressionEnd(masked, start);
-    const expression = source.slice(start, end).trim();
+    const equals = findConstInitializerEquals(
+      masked,
+      match.index! + match[0].length,
+    );
+    if (equals < 0) continue;
+    const end = findStaticExpressionEnd(masked, equals + 1);
+    const expression = stripSourceComments(
+      source.slice(equals + 1, end),
+    ).trim();
     if (!expression || ambiguousBindings.has(name)) continue;
     if (bindings.has(name)) {
       bindings.delete(name);
@@ -374,6 +483,43 @@ function collectTopLevelConstBindings(
   }
 
   return { bindings, ambiguousBindings };
+}
+
+function findConstInitializerEquals(masked: string, start: number): number {
+  let parentheses = 0;
+  let brackets = 0;
+  let braces = 0;
+  let angles = 0;
+  for (let index = start; index < masked.length; index++) {
+    const char = masked[index]!;
+    if (char === "(") parentheses++;
+    else if (char === ")") parentheses--;
+    else if (char === "[") brackets++;
+    else if (char === "]") brackets--;
+    else if (char === "{") braces++;
+    else if (char === "}") braces--;
+    else if (char === "<") angles++;
+    else if (char === ">" && angles > 0) angles--;
+    else if (
+      char === "=" &&
+      masked[index + 1] !== ">" &&
+      parentheses === 0 &&
+      brackets === 0 &&
+      braces === 0 &&
+      angles === 0
+    ) {
+      return index;
+    } else if (
+      (char === ";" || char === "\n" || char === "\r") &&
+      parentheses === 0 &&
+      brackets === 0 &&
+      braces === 0 &&
+      angles === 0
+    ) {
+      return -1;
+    }
+  }
+  return -1;
 }
 
 function readDefaultExportExpression(
@@ -1337,7 +1483,7 @@ function resolveStaticExpressionSource(
 }
 
 function stripStaticSyntax(value: string): string {
-  let expression = value.trim();
+  let expression = stripSourceComments(value).trim();
   let previous = "";
   while (expression !== previous) {
     previous = expression;
@@ -1365,23 +1511,11 @@ function stripStaticSyntax(value: string): string {
 }
 
 function collectConstBindings(source: string): StaticScanContext {
-  const bindings = new Map<string, string>();
-  const ambiguousBindings = new Set<string>();
   const masked = createLexicalMask(source);
-  const pattern = /\bconst\s+([A-Za-z_$][\w$]*)\s*=/gu;
-  for (const match of masked.matchAll(pattern)) {
-    const name = match[1]!;
-    const start = match.index! + match[0].length;
-    const end = findStaticExpressionEnd(masked, start);
-    const expression = source.slice(start, end).trim();
-    if (!expression || ambiguousBindings.has(name)) continue;
-    if (bindings.has(name)) {
-      bindings.delete(name);
-      ambiguousBindings.add(name);
-      continue;
-    }
-    bindings.set(name, expression);
-  }
+  const { bindings, ambiguousBindings } = collectTopLevelConstBindings(
+    source,
+    masked,
+  );
   const schemaAdapterBindings = new Set(
     [...collectSchemaAdapterImportBindings(source, masked)].filter(
       (name) => !bindings.has(name) && !ambiguousBindings.has(name),
@@ -1506,13 +1640,78 @@ function splitTopLevelArgs(argsText: string): string[] {
     if (char === "{" || char === "(" || char === "[") depth++;
     else if (char === "}" || char === ")" || char === "]") depth--;
     else if (char === "," && depth === 0) {
-      args.push(argsText.slice(start, i).trim());
+      args.push(stripSourceComments(argsText.slice(start, i)).trim());
       start = i + 1;
     }
   }
 
-  args.push(argsText.slice(start).trim());
+  args.push(stripSourceComments(argsText.slice(start)).trim());
+  if (args.at(-1) === "") args.pop();
   return args;
+}
+
+function stripSourceComments(source: string): string {
+  let output = "";
+  let index = 0;
+  let state:
+    | "code"
+    | "single"
+    | "double"
+    | "template"
+    | "line-comment"
+    | "block-comment" = "code";
+  while (index < source.length) {
+    const char = source[index]!;
+    const next = source[index + 1];
+    if (state === "code") {
+      if (char === "'" || char === '"' || char === "`") {
+        state = char === "'" ? "single" : char === '"' ? "double" : "template";
+        output += char;
+        index++;
+      } else if (char === "/" && next === "/") {
+        state = "line-comment";
+        output += "  ";
+        index += 2;
+      } else if (char === "/" && next === "*") {
+        state = "block-comment";
+        output += "  ";
+        index += 2;
+      } else {
+        output += char;
+        index++;
+      }
+      continue;
+    }
+    if (state === "line-comment") {
+      if (char === "\n" || char === "\r") {
+        state = "code";
+        output += char;
+      } else output += " ";
+      index++;
+      continue;
+    }
+    if (state === "block-comment") {
+      if (char === "*" && next === "/") {
+        state = "code";
+        output += "  ";
+        index += 2;
+      } else {
+        output += char === "\n" || char === "\r" ? char : " ";
+        index++;
+      }
+      continue;
+    }
+    const quote = state === "single" ? "'" : state === "double" ? '"' : "`";
+    output += char;
+    index++;
+    if (char === "\\" && index < source.length) {
+      output += source[index]!;
+      index++;
+    } else if (char === quote) {
+      state = "code";
+    }
+  }
+  return output;
 }
 
 function readStringLiteral(value: string): string | null {
@@ -1696,27 +1895,6 @@ function filePathToRoutePrefix(filePath: string, routesDir: string): string {
   }
 
   return rel;
-}
-
-function normalizeRoutePath(prefix: string, subPath: string): string {
-  const cleanPrefix =
-    prefix.endsWith("/") && prefix.length > 1 ? prefix.slice(0, -1) : prefix;
-  const cleanSubPath = subPath.startsWith("/") ? subPath.slice(1) : subPath;
-
-  if (!cleanSubPath) {
-    return cleanPrefix || "/";
-  }
-
-  if (cleanPrefix === "/") {
-    return `/${cleanSubPath}`;
-  }
-
-  const fullPath = `${cleanPrefix}/${cleanSubPath}`;
-  if (fullPath.length > 1 && fullPath.endsWith("/")) {
-    return fullPath.slice(0, -1);
-  }
-
-  return fullPath;
 }
 
 function escapeRegExp(value: string): string {

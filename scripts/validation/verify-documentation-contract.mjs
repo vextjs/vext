@@ -13,6 +13,9 @@ const failures = [];
 const packageVersion = JSON.parse(
   readFileSync(path.join(root, "package.json"), "utf8"),
 ).version;
+const versionChannels = JSON.parse(
+  readFileSync(path.join(root, "website", "version-channels.json"), "utf8"),
+);
 const requiredCapabilityIds = [
   "framework-seo",
   "whole-page-no-hydration",
@@ -307,6 +310,13 @@ function verifyDocumentationGrowthContract() {
   }
 
   requireTokens("website/package.json", ["generate-machine-artifacts.mjs"]);
+  requireTokens("website/scripts/generate-machine-artifacts.mjs", [
+    '"version-channels.json"',
+    "channel: docsVersions.channel",
+    "stableVersion: docsVersions.stable",
+    "nextVersion: docsVersions.next",
+    "stability: docsVersions.channel",
+  ]);
 
   const capabilities = readJson("website/docs/public/capabilities.json");
   if (capabilities) {
@@ -869,7 +879,10 @@ function verifyRouteProjectionDocumentationContract() {
       `website/docs/${locale}/guide/i18n.md`,
       `website/docs/${locale}/guide/openapi.md`,
       `website/docs/${locale}/guide/routing.md`,
+      `website/docs/${locale}/guide/middleware.md`,
       `website/docs/${locale}/guide/services.md`,
+      `website/docs/${locale}/api/config.md`,
+      `website/docs/${locale}/examples/permission-core-auth.md`,
     ];
 
     requireFiles(`${locale} route projection documentation`, [
@@ -921,6 +934,41 @@ function verifyRouteProjectionDocumentationContract() {
 
     for (const example of routeProjectionExamples) {
       forbidTokens(example, ["requireAuth("]);
+    }
+
+    const helperContractDocs = [
+      `website/docs/${locale}/guide/routing.md`,
+      `website/docs/${locale}/guide/middleware.md`,
+      `website/docs/${locale}/api/config.md`,
+      routeDocs,
+      `website/docs/${locale}/examples/permission-core-auth.md`,
+    ];
+    for (const helperDoc of helperContractDocs) {
+      requireTokens(helperDoc, [locale === "en" ? "same-file" : "同文件"]);
+    }
+    const forbiddenHelperClaims =
+      locale === "en"
+        ? [
+            "usually wrapped by a local helper",
+            "wrapped in a local route guard helper",
+            "permission resources in a local helper",
+            "through a local route guard helper",
+            "permission resources in local helpers",
+            "route through local helpers",
+            "requirePostPermission(",
+            "requirePostUpdate(",
+          ]
+        : [
+            "通常由本地 helper",
+            "本地 route guard helper",
+            "业务特定的权限资源应集中在本地 helper",
+            "通过本地 helper 间接使用",
+            "集中在本地 helper",
+            "requirePostPermission(",
+            "requirePostUpdate(",
+          ];
+    for (const helperDoc of helperContractDocs) {
+      forbidTokens(helperDoc, forbiddenHelperClaims);
     }
   }
 }
@@ -1704,6 +1752,21 @@ function verifyRenderedMachineArtifacts() {
       `website/dist/docs-manifest.json must declare framework version ${packageVersion}`,
     );
   }
+  if (manifest.channel !== versionChannels.channel) {
+    fail(
+      `website/dist/docs-manifest.json must declare channel ${versionChannels.channel}`,
+    );
+  }
+  if (manifest.stableVersion !== versionChannels.stable) {
+    fail(
+      `website/dist/docs-manifest.json must declare stableVersion ${versionChannels.stable}`,
+    );
+  }
+  if (manifest.nextVersion !== versionChannels.next) {
+    fail(
+      `website/dist/docs-manifest.json must declare nextVersion ${versionChannels.next}`,
+    );
+  }
   if (!Array.isArray(manifest.entries)) {
     fail("website/dist/docs-manifest.json must contain entries");
     return;
@@ -1739,6 +1802,11 @@ function verifyRenderedMachineArtifacts() {
     if (entry.locale !== expectedLocale) {
       fail(`docs manifest has invalid locale for route: ${entry.route}`);
     }
+    if (entry.stability !== versionChannels.channel) {
+      fail(
+        `docs manifest has invalid stability for ${entry.route}: expected ${versionChannels.channel}`,
+      );
+    }
     if (!entry.title?.trim() || !entry.summary?.trim()) {
       fail(`docs manifest has an empty title or summary: ${entry.route}`);
     }
@@ -1767,7 +1835,10 @@ function verifyRenderedMachineArtifacts() {
         `docs manifest has incomplete semantic metadata for route: ${entry.route}`,
       );
     }
-    if (entry.stability !== "stable" || !Array.isArray(entry.related)) {
+    if (
+      entry.stability !== versionChannels.channel ||
+      !Array.isArray(entry.related)
+    ) {
       fail(
         `docs manifest has invalid stability or related metadata for route: ${entry.route}`,
       );
@@ -1969,6 +2040,152 @@ function runTokenizerSelfTest() {
   }
 }
 
+function verifyRepairLifecycleDocumentationContract() {
+  const contracts = {
+    en: {
+      pluginGuide: [
+        "{ signal: AbortSignal }",
+        "hard timeout",
+        "rolled back",
+        "revoked",
+        "late continuation",
+      ],
+      pluginApi: [
+        "`VextPluginSetupContext`",
+        "`signal: AbortSignal`",
+        "rolls back",
+        "revokes",
+        "late asynchronous continuation",
+      ],
+      database: [
+        '`validation: "strict"`',
+        '`"lenient"`',
+        "default-export a model-definition object",
+        "rollback journal",
+        "owned by the application",
+      ],
+      session: [
+        "`autoCommit: true`",
+        "response send barrier",
+        "original success response",
+        "bounded opportunistic sweeps",
+        "exactly once during app shutdown",
+      ],
+      bootstrap: ["hard deadline", "late continuation", "discarded"],
+      testing: [
+        "CommonJS `require()`",
+        "share runtime identity",
+        'require("vextjs").HttpError',
+      ],
+      doctor: [
+        "fingerprint",
+        "stale manifests are rebuilt",
+        "`--manifest-only`",
+        "project root",
+      ],
+      staticAssets: [
+        "encoded traversal",
+        "symbolic link",
+        "untrusted input",
+        "sha256 drift",
+      ],
+      seo: [
+        "`maxUrls`",
+        "`maxBytes`",
+        "`timeoutMs`",
+        "pathname base",
+        "`HEAD`",
+      ],
+    },
+    zh: {
+      pluginGuide: [
+        "{ signal: AbortSignal }",
+        "硬超时",
+        "会回滚",
+        "被撤销",
+        "迟到 continuation",
+      ],
+      pluginApi: [
+        "`VextPluginSetupContext`",
+        "`signal: AbortSignal`",
+        "回滚 setup 阶段",
+        "撤销 setup facade",
+        "迟到的异步 continuation",
+      ],
+      database: [
+        '`validation: "strict"`',
+        '`"lenient"`',
+        "default export Model 定义对象",
+        "rollback journal",
+        "归当前应用所有",
+      ],
+      session: [
+        "`autoCommit: true`",
+        "响应发送屏障",
+        "原成功响应",
+        "有界的机会式 sweep",
+        "且仅调用一次",
+      ],
+      bootstrap: ["硬期限", "迟到 continuation", "会被丢弃"],
+      testing: [
+        "CommonJS `require()`",
+        "共享运行时身份",
+        'require("vextjs").HttpError',
+      ],
+      doctor: [
+        "fingerprint",
+        "stale manifest 会重新构建",
+        "`--manifest-only`",
+        "项目根",
+      ],
+      staticAssets: [
+        "编码后的 traversal path",
+        "符号链接",
+        "不可信输入",
+        "sha256 漂移",
+      ],
+      seo: [
+        "`maxUrls`",
+        "`maxBytes`",
+        "`timeoutMs`",
+        "pathname base",
+        "`HEAD`",
+      ],
+    },
+  };
+
+  for (const locale of ["en", "zh"]) {
+    const contract = contracts[locale];
+    requireTokens(
+      `website/docs/${locale}/guide/plugins.md`,
+      contract.pluginGuide,
+    );
+    requireTokens(
+      `website/docs/${locale}/api/plugin-api.md`,
+      contract.pluginApi,
+    );
+    requireTokens(
+      `website/docs/${locale}/guide/database.md`,
+      contract.database,
+    );
+    requireTokens(
+      `website/docs/${locale}/guide/cookies-session.md`,
+      contract.session,
+    );
+    requireTokens(`website/docs/${locale}/api/config.md`, contract.bootstrap);
+    requireTokens(`website/docs/${locale}/guide/testing.md`, contract.testing);
+    requireTokens(`website/docs/${locale}/guide/cli.md`, contract.doctor);
+    requireTokens(
+      `website/docs/${locale}/frontend/static-assets-and-cdn.md`,
+      contract.staticAssets,
+    );
+    requireTokens(
+      `website/docs/${locale}/frontend/seo-sitemap.md`,
+      contract.seo,
+    );
+  }
+}
+
 runTokenizerSelfTest();
 
 if (renderedOnly) {
@@ -1989,6 +2206,7 @@ if (renderedOnly) {
   verifyExampleAndMetadata();
   verifyExecutableExampleDocumentationContract();
   verifyV2MigrationAndDatabaseDocumentationContract();
+  verifyRepairLifecycleDocumentationContract();
 }
 
 if (failures.length > 0) {

@@ -325,7 +325,10 @@ export async function bootstrap(
       try {
         await startupProfiler.time(
           "start.builtinPlugin.monsqlize",
-          () => monsqlizePlugin.setup(app),
+          () =>
+            monsqlizePlugin.setup(app, {
+              signal: new AbortController().signal,
+            }),
           { phase: "database", detail: { builtin: true } },
         );
         hooks.emitSafeSync("plugin:afterSetup", {

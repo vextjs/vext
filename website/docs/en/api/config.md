@@ -68,6 +68,7 @@ Constraints:
 
 - provider must return plain object patch or `null`
 - patch only supports JSON-like structure
+- `timeoutMs` is a hard deadline: expiry aborts the provider `signal`, and a patch returned by a late continuation is discarded rather than merged
 - When `required` is not declared: `production` defaults to fail-fast, `development/test` defaults to continue after warning
 - In Cluster mode, the same provider patch will be reused in the same startup cycle to prevent Master / Worker from seeing different results.
 
@@ -748,7 +749,7 @@ export default {
 
 ### `guardSecurityMap` legacy fallback
 
-Automatically map routing middleware names to OpenAPI Security Scheme for legacy middleware-only routes. New Auth examples should prefer `RouteOptions.auth` through a local route guard helper so runtime protection and OpenAPI security share the same source:
+Automatically map routing middleware names to OpenAPI Security Scheme for legacy middleware-only routes. New Auth examples should declare the final `RouteOptions.auth` inline or in a same-file `const` so runtime protection, static projection, and OpenAPI security share the same source. Route-options helper calls are not supported by the finite static grammar:
 
 ```typescript
 // Legacy only: middleware-name inference without RouteOptions.auth
@@ -862,6 +863,9 @@ Built-in frontend build and static serving configuration.
 | `seo.sitemap.includeStatic`                            | `boolean`                            | `true`                                                       | Includes successful static page artifacts unless page SEO excludes them                                |
 | `seo.sitemap.entries`                                  | `VextSitemapEntriesProvider`         | None                                                         | Adds validated entries from `{ mode, origin, originKey, signal }`                                      |
 | `seo.sitemap.maxUrlsPerFile`                           | `number`                             | `50000`                                                      | URL limit before emitting a sitemap index and numbered chunks                                          |
+| `seo.sitemap.maxUrls`                                  | `number`                             | `100000`                                                     | Maximum URLs accepted across the complete sitemap set; generation fails closed above the limit         |
+| `seo.sitemap.maxBytes`                                 | `number`                             | `52428800`                                                   | Maximum UTF-8 bytes across all rendered sitemap documents                                              |
+| `seo.sitemap.timeoutMs`                                | `number`                             | `5000`                                                       | Deadline for runtime provider, read, and render work; expiry aborts the provider signal                |
 | `seo.robots`                                           | `false \| VextFrontendRobotsConfig`  | `false`                                                      | Enables build-time or runtime robots output                                                            |
 | `seo.robots.mode`                                      | `'build' \| 'runtime'`               | `'build'`                                                    | Writes the artifact during build or serves it from a runtime endpoint                                  |
 | `seo.robots.path`                                      | `'/robots.txt'`                      | `'/robots.txt'`                                              | Fixed robots pathname                                                                                  |

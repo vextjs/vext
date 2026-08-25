@@ -1,0 +1,8 @@
+{
+  "accepted": true,
+  "artifactVersion": "2.0.0",
+  "artifactSha256": "b912b6362910fd830311c87d579db4f967d4daa1b4fcd945d1f4ac0eb665d883",
+  "consumerRepo": "https://github.com/devcodex-labs/vextjs-test.git",
+  "consumerCommit": "ee5d9d83aca789b6e374e8e64b2c5fb57274636d",
+  "runId": "B34-cpa-20260825-r8"
+}

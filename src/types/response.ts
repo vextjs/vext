@@ -292,6 +292,16 @@ export interface VextResponse {
   _flush?(): void;
 
   /**
+   * Discard a buffered terminal response before it reaches the host.
+   * Used by commit barriers (for example Session persistence) so a failed
+   * prerequisite can re-enter the adapter's normal error response path.
+   * Returns false once an eager/streaming response has already flushed.
+   *
+   * @internal
+   */
+  _discardPendingSend?(): boolean;
+
+  /**
    * 发送前拦截钩子（内部方法）
    *
    * cache MISS 时由响应缓存中间件注册，json()/render() 发送时回调以捕获
@@ -321,6 +331,15 @@ export interface VextResponse {
     statusCode: number,
     headers: VextHeaders,
   ) => void;
+
+  /**
+   * Session persistence is in flight for the staged response. Route cache uses
+   * this marker to avoid capturing a response before its session outcome is
+   * known. Cleared before buffered adapter flush.
+   *
+   * @internal
+   */
+  _sessionCommitPending?: boolean;
 
   /**
    * Hook Manager 引用（内部方法）

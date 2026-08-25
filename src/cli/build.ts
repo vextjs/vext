@@ -15,6 +15,7 @@ import {
 } from "../lib/config-profile.js";
 import { readRequiredOptionValue } from "./utils/command-args.js";
 import { markUniqueOption } from "./utils/option-occurrence.js";
+import { assertSafeProjectOutputDirectory } from "../lib/path-boundary.js";
 
 /**
  * vext build — 生产编译命令（Phase 2A）
@@ -108,7 +109,11 @@ export async function buildCommand(args: string[] = []): Promise<void> {
   const rootDir = path.resolve(process.cwd());
   const project = detectProject(rootDir);
 
-  const outDir = path.resolve(project.rootDir, options.outdir);
+  const outDir = assertSafeProjectOutputDirectory(
+    project.rootDir,
+    path.resolve(project.rootDir, options.outdir),
+    "build --outdir",
+  );
 
   // ── 打印编译信息 ──────────────────────────────────────────
   console.log(

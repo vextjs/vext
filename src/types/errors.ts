@@ -47,10 +47,24 @@ function isHttpErrorOptions(value: unknown): value is HttpErrorOptions {
   );
 }
 
+const HTTP_ERROR_BRAND = Symbol.for("vext.http-error");
+const VALIDATION_ERROR_BRAND = Symbol.for("vext.validation-error");
+
 export class HttpError extends Error {
   public override readonly name = "HttpError" as const;
   public readonly code?: number | string;
   public readonly details?: unknown;
+
+  static override [Symbol.hasInstance](value: unknown): boolean {
+    if (this !== HttpError) {
+      return Function.prototype[Symbol.hasInstance].call(this, value);
+    }
+    return Boolean(
+      value &&
+      typeof value === "object" &&
+      (value as Record<PropertyKey, unknown>)[HTTP_ERROR_BRAND] === true,
+    );
+  }
 
   constructor(
     /** HTTP 状态码 */
@@ -63,6 +77,7 @@ export class HttpError extends Error {
     details?: unknown,
   ) {
     super(message);
+    Object.defineProperty(this, HTTP_ERROR_BRAND, { value: true });
 
     if (isHttpErrorOptions(codeOrOptions)) {
       this.code = codeOrOptions.code;
@@ -104,6 +119,17 @@ export interface VextValidationFieldError {
 export class VextValidationError extends Error {
   public override readonly name = "VextValidationError" as const;
 
+  static override [Symbol.hasInstance](value: unknown): boolean {
+    if (this !== VextValidationError) {
+      return Function.prototype[Symbol.hasInstance].call(this, value);
+    }
+    return Boolean(
+      value &&
+      typeof value === "object" &&
+      (value as Record<PropertyKey, unknown>)[VALIDATION_ERROR_BRAND] === true,
+    );
+  }
+
   constructor(
     /** 校验失败的字段错误列表 */
     public readonly errors: VextValidationFieldError[],
@@ -113,6 +139,7 @@ export class VextValidationError extends Error {
     public readonly status: 400 | 422 = 422,
   ) {
     super(message);
+    Object.defineProperty(this, VALIDATION_ERROR_BRAND, { value: true });
 
     // 确保 instanceof 检查在继承链中正常工作
     Object.setPrototypeOf(this, new.target.prototype);

@@ -197,9 +197,7 @@ describe.each(adapters)(
       expect(res._isSent()).toBe(true);
 
       res._flush?.();
-      expect(headers["content-type"]).toBe(
-        "application/json; charset=utf-8",
-      );
+      expect(headers["content-type"]).toBe("application/json; charset=utf-8");
       expect(String(headers["content-length"])).toBe(
         String(Buffer.byteLength(body)),
       );
@@ -216,9 +214,20 @@ describe.each(adapters)(
       expect(res.headersSent).toBe(true);
 
       res._flush?.();
-      expect(headers["content-type"]).toBe(
-        "application/json; charset=utf-8",
-      );
+      expect(headers["content-type"]).toBe("application/json; charset=utf-8");
+    });
+
+    it("can discard a buffered success before the host flushes", () => {
+      const { res, headers } = createHarness();
+
+      res.json({ ok: true });
+      expect(res._isSent()).toBe(true);
+      expect(res._discardPendingSend?.()).toBe(true);
+      expect(res._isSent()).toBe(false);
+
+      res.rawJson({ code: 500 }, 500);
+      res._flush?.();
+      expect(headers["content-type"]).toBe("application/json; charset=utf-8");
     });
 
     it("rejects invalid response header names and values before send", () => {

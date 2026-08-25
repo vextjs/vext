@@ -4,6 +4,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { RouteOptions } from "../../types/app.js";
 import type { VextRequest } from "../../types/request.js";
+import { resolvePathInside } from "../../lib/path-boundary.js";
 import { createRouteFreshnessIdentity } from "../contract/schema-ir.js";
 import type {
   ResolvedVextFrontendConfig,
@@ -294,7 +295,12 @@ async function writeStageFile(
   relativePath: string,
   content: string,
 ): Promise<void> {
-  const filePath = path.join(stageDir, relativePath);
+  const filePath = resolvePathInside(
+    stageDir,
+    relativePath,
+    "frontend static stage artifact path",
+    { realpath: true },
+  );
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, content, "utf-8");
 }
@@ -312,8 +318,18 @@ async function publishStaticStage(
     ),
   ].sort((left, right) => left.localeCompare(right));
   for (const relativePath of files) {
-    const source = path.join(stageDir, relativePath);
-    const target = path.join(outDir, relativePath);
+    const source = resolvePathInside(
+      stageDir,
+      relativePath,
+      "frontend static staged artifact path",
+      { realpath: true },
+    );
+    const target = resolvePathInside(
+      outDir,
+      relativePath,
+      "frontend static publish artifact path",
+      { realpath: true },
+    );
     await mkdir(path.dirname(target), { recursive: true });
     await rename(source, target);
   }

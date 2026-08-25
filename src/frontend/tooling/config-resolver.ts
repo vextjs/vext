@@ -19,6 +19,11 @@ import {
   normalizeSeoSafeText,
   normalizeSeoTextList,
 } from "../contract/seo-normalization.js";
+import {
+  assertPathInside,
+  assertSafeProjectOutputDirectory,
+  normalizeSafeRelativePath,
+} from "../../lib/path-boundary.js";
 
 export interface ResolveFrontendConfigOptions {
   rootDir: string;
@@ -85,6 +90,11 @@ export function resolveFrontendConfig(
       (options.mode === "development" ? ".vext/client" : "dist/client"),
     "config.frontend.outDir",
   );
+  assertSafeProjectOutputDirectory(
+    options.rootDir,
+    outDir,
+    "config.frontend.outDir",
+  );
   const publicDir = resolveProjectPath(
     options.rootDir,
     raw?.publicDir ?? "public",
@@ -112,11 +122,37 @@ export function resolveFrontendConfig(
       : [build.target]
     : ["es2022"];
   const clientBuild = build.client ?? {};
+  const clientAssetsDir = normalizeSafeRelativePath(
+    clientBuild.assetsDir ?? "assets",
+    "config.frontend.build.client.assetsDir",
+  );
+  const clientEntryNames = normalizeSafeRelativePath(
+    clientBuild.entryNames ?? "[name]-[hash]",
+    "config.frontend.build.client.entryNames",
+  );
+  const clientChunkNames = normalizeSafeRelativePath(
+    clientBuild.chunkNames ?? "[name]-[hash]",
+    "config.frontend.build.client.chunkNames",
+  );
+  const clientAssetNames = normalizeSafeRelativePath(
+    clientBuild.assetNames ?? "[name]-[hash]",
+    "config.frontend.build.client.assetNames",
+  );
   const clientTarget = normalizeTarget(
     clientBuild.target ?? build.target,
     "es2022",
   );
   const serverBuild = build.server ?? {};
+  const serverOutFile = resolveProjectPath(
+    options.rootDir,
+    serverBuild.outFile ?? path.join(outDir, "server", "renderer.cjs"),
+    "config.frontend.build.server.outFile",
+  );
+  assertPathInside(
+    outDir,
+    serverOutFile,
+    "config.frontend.build.server.outFile",
+  );
   const serverTarget = normalizeTarget(serverBuild.target, "node20");
   assertSupportedBuildTargetKeys(
     clientBuild,
@@ -192,7 +228,7 @@ export function resolveFrontendConfig(
       target,
       client: {
         outDir,
-        assetsDir: clientBuild.assetsDir ?? "assets",
+        assetsDir: clientAssetsDir,
         target: clientTarget,
         minify:
           clientBuild.minify ?? build.minify ?? options.mode === "production",
@@ -201,9 +237,9 @@ export function resolveFrontendConfig(
           build.sourcemap ??
           options.mode === "development",
         splitting: clientBuild.splitting ?? true,
-        entryNames: clientBuild.entryNames ?? "[name]-[hash]",
-        chunkNames: clientBuild.chunkNames ?? "[name]-[hash]",
-        assetNames: clientBuild.assetNames ?? "[name]-[hash]",
+        entryNames: clientEntryNames,
+        chunkNames: clientChunkNames,
+        assetNames: clientAssetNames,
         external: clientBuild.external ?? [],
         externalRuntime: normalizeExternalRuntime(
           clientBuild.externalRuntime,
@@ -211,8 +247,7 @@ export function resolveFrontendConfig(
         ),
       },
       server: {
-        outFile:
-          serverBuild.outFile ?? path.join(outDir, "server", "renderer.cjs"),
+        outFile: serverOutFile,
         target: serverTarget,
         minify: serverBuild.minify ?? false,
         sourcemap: serverBuild.sourcemap ?? options.mode === "development",
@@ -378,6 +413,20 @@ function normalizeSitemap(
       "[vextjs] config.frontend.seo.sitemap.maxUrlsPerFile must be an integer from 1 through 50000.",
     );
   }
+  const maxUrls = value.maxUrls ?? 100_000;
+  const maxBytes = value.maxBytes ?? 50 * 1024 * 1024;
+  const timeoutMs = value.timeoutMs ?? 5_000;
+  for (const [name, limit, maximum] of [
+    ["maxUrls", maxUrls, 1_000_000],
+    ["maxBytes", maxBytes, 1024 * 1024 * 1024],
+    ["timeoutMs", timeoutMs, 120_000],
+  ] as const) {
+    if (!Number.isInteger(limit) || limit <= 0 || limit > maximum) {
+      throw new Error(
+        `[vextjs] config.frontend.seo.sitemap.${name} must be an integer from 1 through ${maximum}.`,
+      );
+    }
+  }
   if (value.entries !== undefined && typeof value.entries !== "function") {
     throw new Error(
       "[vextjs] config.frontend.seo.sitemap.entries must be a function.",
@@ -392,6 +441,9 @@ function normalizeSitemap(
     includeStatic: value.includeStatic ?? true,
     entries: value.entries,
     maxUrlsPerFile,
+    maxUrls,
+    maxBytes,
+    timeoutMs,
   };
 }
 

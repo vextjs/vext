@@ -176,6 +176,33 @@ function createMockMonSQLize() {
   };
 }
 
+function createMockModelRegistry(
+  initial: Record<string, unknown> = {},
+  failOnDefine?: string,
+) {
+  const registry = new Map(
+    Object.entries(initial).map(([key, definition]) => [
+      key,
+      { collectionName: key, definition },
+    ]),
+  );
+  const ModelClass = {
+    define: vi.fn((key: string, definition: unknown) => {
+      if (key === failOnDefine) throw new Error(`define failed: ${key}`);
+      if (registry.has(key)) throw new Error(`already defined: ${key}`);
+      registry.set(key, { collectionName: key, definition });
+    }),
+    redefine: vi.fn((key: string, definition: unknown) => {
+      registry.set(key, { collectionName: key, definition });
+    }),
+    undefine: vi.fn((key: string) => registry.delete(key)),
+    has: vi.fn((key: string) => registry.has(key)),
+    get: vi.fn((key: string) => registry.get(key)),
+    list: vi.fn(() => [...registry.keys()]),
+  };
+  return { registry, ModelClass };
+}
+
 // ═════════════════════════════════════════════════════════════
 // shouldLoadMonSQLize — 条件加载判断
 // ═════════════════════════════════════════════════════════════
@@ -581,6 +608,7 @@ describe("setupMonSQLize", () => {
         default: vi.fn().mockImplementation(function () {
           return mockMonSQLize.instance;
         }),
+        Model: createMockModelRegistry().ModelClass,
       }));
 
       // Mock fs.existsSync — 默认 models/ 目录不存在
@@ -866,6 +894,7 @@ describe("buildMonSQLizeConfig (via setupMonSQLize)", () => {
 
     vi.doMock("monsqlize", () => ({
       default: mockMonSQLizeConstructor,
+      Model: createMockModelRegistry().ModelClass,
     }));
 
     vi.doMock("mongodb-memory-server-core", () => ({
@@ -1567,15 +1596,15 @@ describe("loadModels", () => {
   let mockFastGlob: ReturnType<typeof vi.fn>;
   let importMocks: Map<string, Record<string, unknown>>;
   let mockModelDefine: ReturnType<typeof vi.fn>;
-  let mockModelHas: ReturnType<typeof vi.fn>;
+  let mockModelRegistry: ReturnType<typeof createMockModelRegistry>;
 
   beforeEach(async () => {
     vi.resetModules();
     importMocks = new Map();
     mockExistsSync = vi.fn().mockReturnValue(false);
     mockFastGlob = vi.fn().mockResolvedValue([]);
-    mockModelDefine = vi.fn();
-    mockModelHas = vi.fn().mockReturnValue(false);
+    mockModelRegistry = createMockModelRegistry();
+    mockModelDefine = mockModelRegistry.ModelClass.define;
 
     vi.doMock("node:fs", async (importOriginal) => {
       const actual = await importOriginal<typeof import("node:fs")>();
@@ -1594,8 +1623,7 @@ describe("loadModels", () => {
     vi.doMock("monsqlize", () => ({
       default: Object.assign(vi.fn(), {
         Model: {
-          define: mockModelDefine,
-          has: mockModelHas,
+          ...mockModelRegistry.ModelClass,
         },
       }),
     }));
@@ -1678,8 +1706,8 @@ describe("loadModels", () => {
   it("loads shared models from default export object", async () => {
     vi.resetModules();
 
-    const localModelDefine = vi.fn();
-    const localModelHas = vi.fn().mockReturnValue(false);
+    const localRegistry = createMockModelRegistry();
+    const localModelDefine = localRegistry.ModelClass.define;
 
     // We need to re-mock after resetModules
     vi.doMock("node:fs", async (importOriginal) => {
@@ -1689,10 +1717,7 @@ describe("loadModels", () => {
 
     vi.doMock("monsqlize", () => ({
       default: Object.assign(vi.fn(), {
-        Model: {
-          define: localModelDefine,
-          has: localModelHas,
-        },
+        Model: localRegistry.ModelClass,
       }),
     }));
 
@@ -1731,13 +1756,12 @@ describe("loadModels", () => {
       const actual = await importOriginal<typeof import("node:fs")>();
       return { ...actual, existsSync: vi.fn().mockReturnValue(false) };
     });
+    const collidingRegistry = createMockModelRegistry({
+      users: { schema: {} },
+    });
     vi.doMock("monsqlize", () => ({
       default: Object.assign(vi.fn(), {
-        Model: {
-          define: vi.fn(),
-          redefine: vi.fn(),
-          has: vi.fn().mockReturnValue(true),
-        },
+        Model: collidingRegistry.ModelClass,
       }),
     }));
     vi.doMock("@project/colliding-models", () => ({
@@ -1756,24 +1780,23 @@ describe("loadModels", () => {
         app,
         "/tmp/src",
       ),
-    ).rejects.toThrow("shared model key 'users' is already registered");
+    ).rejects.toThrow(
+      "model key 'users' is already registered outside this app",
+    );
   });
 
   it("preflights every shared default key before registering any model", async () => {
     vi.resetModules();
 
-    const localModelDefine = vi.fn();
+    const partialRegistry = createMockModelRegistry({ orders: { schema: {} } });
+    const localModelDefine = partialRegistry.ModelClass.define;
     vi.doMock("node:fs", async (importOriginal) => {
       const actual = await importOriginal<typeof import("node:fs")>();
       return { ...actual, existsSync: vi.fn().mockReturnValue(false) };
     });
     vi.doMock("monsqlize", () => ({
       default: Object.assign(vi.fn(), {
-        Model: {
-          define: localModelDefine,
-          redefine: vi.fn(),
-          has: vi.fn((name: string) => name === "orders"),
-        },
+        Model: partialRegistry.ModelClass,
       }),
     }));
     vi.doMock("@project/partially-colliding-models", () => ({
@@ -1795,11 +1818,13 @@ describe("loadModels", () => {
         app,
         "/tmp/src",
       ),
-    ).rejects.toThrow("shared model key 'orders' is already registered");
+    ).rejects.toThrow(
+      "model key 'orders' is already registered outside this app",
+    );
     expect(localModelDefine).not.toHaveBeenCalled();
   });
 
-  it("loads shared models via registerModels function", async () => {
+  it("rejects an untrackable shared registerModels callback", async () => {
     vi.resetModules();
 
     const registerModels = vi.fn();
@@ -1811,7 +1836,7 @@ describe("loadModels", () => {
 
     vi.doMock("monsqlize", () => ({
       default: Object.assign(vi.fn(), {
-        Model: { define: vi.fn(), has: vi.fn().mockReturnValue(false) },
+        Model: createMockModelRegistry().ModelClass,
       }),
     }));
 
@@ -1825,14 +1850,16 @@ describe("loadModels", () => {
     const monsqlize = createMockMonsqlize() as any;
     const { app } = createMockApp();
 
-    await mod.loadModels(
-      monsqlize,
-      { sharedPackage: "@project/shared-models" },
-      app,
-      "/tmp/src",
-    );
+    await expect(
+      mod.loadModels(
+        monsqlize,
+        { sharedPackage: "@project/shared-models" },
+        app,
+        "/tmp/src",
+      ),
+    ).rejects.toThrow("unsupported registerModels()");
 
-    expect(registerModels).toHaveBeenCalledWith(monsqlize);
+    expect(registerModels).not.toHaveBeenCalled();
   });
 
   it("throws when shared package import fails", async () => {
@@ -1845,7 +1872,7 @@ describe("loadModels", () => {
 
     vi.doMock("monsqlize", () => ({
       default: Object.assign(vi.fn(), {
-        Model: { define: vi.fn(), has: vi.fn().mockReturnValue(false) },
+        Model: createMockModelRegistry().ModelClass,
       }),
     }));
 
@@ -1878,7 +1905,7 @@ describe("loadModels", () => {
 
     vi.doMock("monsqlize", () => ({
       default: Object.assign(vi.fn(), {
-        Model: { define: vi.fn(), has: vi.fn().mockReturnValue(false) },
+        Model: createMockModelRegistry().ModelClass,
       }),
     }));
 
@@ -1896,13 +1923,16 @@ describe("loadModels", () => {
 
     await mod.loadModels(
       monsqlize,
-      { sharedPackage: "@project/empty-models" },
+      {
+        sharedPackage: "@project/empty-models",
+        validation: "lenient",
+      },
       app,
       "/tmp/src",
     );
 
     expect(app.logger.warn).toHaveBeenCalledWith(
-      expect.stringContaining("no valid export"),
+      expect.stringContaining("no valid default model-definition object"),
     );
   });
 
@@ -1916,7 +1946,7 @@ describe("loadModels", () => {
 
     vi.doMock("monsqlize", () => ({
       default: Object.assign(vi.fn(), {
-        Model: { define: vi.fn(), has: vi.fn().mockReturnValue(false) },
+        Model: createMockModelRegistry().ModelClass,
       }),
     }));
 
@@ -1957,7 +1987,7 @@ describe("loadModels", () => {
 
     vi.doMock("monsqlize", () => ({
       default: Object.assign(vi.fn(), {
-        Model: { define: vi.fn(), has: vi.fn().mockReturnValue(false) },
+        Model: createMockModelRegistry().ModelClass,
       }),
     }));
 
@@ -2044,7 +2074,7 @@ describe("loadModels", () => {
 
     vi.doMock("monsqlize", () => ({
       default: Object.assign(vi.fn(), {
-        Model: { define: vi.fn(), has: vi.fn().mockReturnValue(false) },
+        Model: createMockModelRegistry().ModelClass,
       }),
     }));
 
@@ -2072,83 +2102,6 @@ describe("loadModels", () => {
         typeof call[0] === "string" && call[0].includes("no models/ directory"),
     );
     expect(hasNoModelsLog).toBe(false);
-  });
-});
-
-describe("registerLocalModelEntry", () => {
-  function createRegistry(initialKeys: string[] = []) {
-    const keys = new Set(initialKeys);
-    return {
-      keys,
-      ModelClass: {
-        has: vi.fn((key: string) => keys.has(key)),
-        define: vi.fn((key: string) => keys.add(key)),
-        redefine: vi.fn(),
-      },
-    };
-  }
-
-  it("lets one local primary key explicitly override its shared definition", async () => {
-    const { registerLocalModelEntry } =
-      await import("../../../../src/lib/plugins/monsqlize/model-loader.js");
-    const { ModelClass } = createRegistry(["users"]);
-    const state = {
-      sharedKeys: new Set(["users"]),
-      localKeys: new Set<string>(),
-    };
-
-    registerLocalModelEntry(
-      ModelClass,
-      { registryKey: "users", finalDef: { schema: {} } },
-      undefined,
-      "user.ts",
-      state,
-    );
-
-    expect(ModelClass.redefine).toHaveBeenCalledWith("users", { schema: {} });
-    expect(ModelClass.define).not.toHaveBeenCalled();
-  });
-
-  it("rejects duplicate local primary keys instead of silently skipping", async () => {
-    const { registerLocalModelEntry } =
-      await import("../../../../src/lib/plugins/monsqlize/model-loader.js");
-    const { ModelClass } = createRegistry(["users"]);
-    const state = {
-      sharedKeys: new Set<string>(),
-      localKeys: new Set(["users"]),
-    };
-
-    expect(() =>
-      registerLocalModelEntry(
-        ModelClass,
-        { registryKey: "users", finalDef: { schema: {} } },
-        undefined,
-        "duplicate.ts",
-        state,
-      ),
-    ).toThrow("duplicate local model key 'users'");
-  });
-
-  it("rejects an alias collision before mutating the primary registry", async () => {
-    const { registerLocalModelEntry } =
-      await import("../../../../src/lib/plugins/monsqlize/model-loader.js");
-    const { ModelClass } = createRegistry(["accounts"]);
-    const state = {
-      sharedKeys: new Set<string>(),
-      localKeys: new Set<string>(),
-    };
-
-    expect(() =>
-      registerLocalModelEntry(
-        ModelClass,
-        { registryKey: "users", finalDef: { schema: {} } },
-        "accounts",
-        "user.ts",
-        state,
-      ),
-    ).toThrow("model alias key 'accounts' is already registered");
-    expect(ModelClass.define).not.toHaveBeenCalled();
-    expect(ModelClass.redefine).not.toHaveBeenCalled();
   });
 });
 
@@ -2529,6 +2482,7 @@ describe("integration: plugin lifecycle", () => {
       default: vi.fn().mockImplementation(function () {
         return mockMonSQLize.instance;
       }),
+      Model: createMockModelRegistry().ModelClass,
     }));
 
     vi.doMock("node:fs", async (importOriginal) => {

@@ -81,7 +81,8 @@ const mocks = vi.hoisted(() => {
   };
 });
 
-vi.mock("node:fs", () => ({
+vi.mock("node:fs", async () => ({
+  ...(await vi.importActual<typeof import("node:fs")>("node:fs")),
   existsSync: mocks.existsSync,
   rmSync: mocks.rmSync,
 }));
@@ -217,4 +218,18 @@ describe("buildCommand", () => {
     });
     expect(consoleErrorSpy).not.toHaveBeenCalled();
   });
+
+  it.each([".", "src", "..", "../..", "E:/"])(
+    "rejects destructive build outdir %s before cleanup",
+    async (outdir) => {
+      mocks.existsSync.mockReturnValue(true);
+
+      await expect(
+        buildCommand(["--clean", "--outdir", outdir]),
+      ).rejects.toThrow(/outdir|output directory|project root/iu);
+
+      expect(mocks.rmSync).not.toHaveBeenCalled();
+      expect(mocks.build).not.toHaveBeenCalled();
+    },
+  );
 });

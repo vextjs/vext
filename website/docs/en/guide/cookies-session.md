@@ -93,6 +93,8 @@ The session object supports:
 
 Session metadata such as `id`, `isNew`, `save`, `regenerate`, and `destroy` is non-enumerable and is not persisted into the store.
 
+With `autoCommit: true`, Vext awaits an asynchronous store `set` or `delete` at the response send barrier. If persistence rejects, the original success response and its new session cookie are not sent. Explicit `save()`/`regenerate()`/`destroy()` and auto-commit share one in-flight commit, preventing duplicate writes and cookies. A dirty session cannot be auto-committed after streaming starts; call `await req.session.save()` before `res.stream()`.
+
 ## Configuration
 
 `config.session.enabled: true` enables the global Session runtime and the
@@ -115,7 +117,7 @@ export default {
 };
 ```
 
-`secure: "auto"` sends `Secure` only for HTTPS requests. The default memory store is suitable for development, tests, and single-process deployments. For shared production stores, pass a cache-like backend through the official adapter:
+`secure: "auto"` sends `Secure` only for HTTPS requests. The default memory store removes expired entries on access and through bounded opportunistic sweeps, without a process-retaining timer. It is suitable for development, tests, and single-process deployments. For shared production stores, pass a cache-like backend through the official adapter:
 
 ```typescript
 import { createCacheSessionStore } from "vextjs";
@@ -136,7 +138,7 @@ export default {
 
 `createCacheSessionStore()` accepts a structural cache with `get`, `set`, and `del`. It converts `VextSessionStore` TTL seconds to cache milliseconds, stores JSON strings by default, and implements rolling `touch()` as a cache `get` plus `set`. Install `cache-hub` and the selected backend client, such as `ioredis`, in the consuming app.
 
-`config.cache.cacheHub` and `app.cache` are only for route response cache. They are not a Session Store shortcut and should use a different namespace from sessions. If you provide `close`, Vext calls it during app shutdown. Advanced users can still implement `VextSessionStore` directly for custom persistence contracts.
+`config.cache.cacheHub` and `app.cache` are only for route response cache. They are not a Session Store shortcut and should use a different namespace from sessions. If you provide `close`, Vext calls it exactly once during app shutdown. Advanced users can still implement `VextSessionStore` directly for custom persistence contracts.
 
 Use route options `session: false` to skip Session on a public route. When the
 global runtime is disabled, `session: true` or `{ session: { enabled: true,

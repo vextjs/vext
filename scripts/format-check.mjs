@@ -48,20 +48,75 @@ function unique(files) {
   });
 }
 
+function committedFiles() {
+  const explicitBase = process.env.FORMAT_CHECK_BASE?.trim();
+  const isCommitSha = /^[a-f0-9]{40}$/iu.test(explicitBase ?? "");
+  const isZeroSha = /^0{40}$/u.test(explicitBase ?? "");
+  if (isCommitSha && !isZeroSha) {
+    try {
+      return unique(
+        git([
+          "diff",
+          "--name-only",
+          "--diff-filter=ACMR",
+          `${explicitBase}...HEAD`,
+          "--",
+        ]),
+      );
+    } catch (error) {
+      if (process.env.CI === "true") {
+        throw new Error(
+          `Unable to resolve FORMAT_CHECK_BASE ${explicitBase} in CI`,
+          { cause: error },
+        );
+      }
+    }
+  }
+
+  try {
+    const revision = git(["rev-list", "--parents", "-n", "1", "HEAD"])[0];
+    const [, firstParent, secondParent] = revision?.split(/\s+/u) ?? [];
+    if (firstParent && secondParent) {
+      return unique(
+        git([
+          "diff",
+          "--name-only",
+          "--diff-filter=ACMR",
+          firstParent,
+          "HEAD",
+          "--",
+        ]),
+      );
+    }
+    return unique(
+      git([
+        "diff-tree",
+        "--root",
+        "--no-commit-id",
+        "--name-only",
+        "--diff-filter=ACMR",
+        "-r",
+        "HEAD",
+        "--",
+      ]),
+    );
+  } catch (error) {
+    if (process.env.CI === "true") {
+      throw new Error("Unable to determine committed files in CI", {
+        cause: error,
+      });
+    }
+    return [];
+  }
+}
+
 function changedFiles() {
   const dirty = unique([
     ...git(["diff", "--name-only", "--diff-filter=ACMR", "HEAD", "--"]),
     ...git(["ls-files", "--others", "--exclude-standard"]),
   ]);
   if (dirty.length > 0) return dirty;
-
-  try {
-    return unique(
-      git(["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"]),
-    );
-  } catch {
-    return [];
-  }
+  return committedFiles();
 }
 
 const files = all ? ["."] : changedFiles();

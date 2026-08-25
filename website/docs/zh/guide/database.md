@@ -691,12 +691,17 @@ export default {
       // 是否自动注册（默认 true）
       autoRegister: true,
 
+      // 发现策略：strict（默认）或 lenient
+      validation: "strict",
+
       // 外部共享 Model 包（微服务场景）
       sharedPackage: "@myproject/shared-models",
     },
   },
 };
 ```
+
+`validation: "strict"` 会在修改全局 Model registry 前完成发现、导入、解析与校验。任何无效定义、冲突或提交失败都会终止启动，并回滚整份注册计划。显式使用 `"lenient"` 时只会警告并跳过发现阶段的无效输入；registry 冲突和提交失败仍然 fail closed。注册项归当前应用所有，应用关闭时只释放自己的 Model，不会清空其它应用的注册项。
 
 ### 共享 Model 包（微服务场景）
 
@@ -710,6 +715,8 @@ models: {
   dir: 'models',  // 本地 Model（可覆盖 shared）
 }
 ```
+
+共享包必须 default export Model 定义对象，例如 `{ User: { schema: ... } }`。回调式 `registerModels()` 包会被拒绝，因为 Vext 无法预检、归属所有权或回滚不透明回调注册的 key。
 
 ## 在服务中使用
 
@@ -1041,9 +1048,9 @@ esbuild 重新编译 → dist/models/item.js
   ↓
 model-reloader 检测到 invalidated 文件
   ↓
-保存旧定义（回滚备份）
+构建并校验完整替换计划
   ↓
-Model.redefine("items", newDefinition)
+使用 rollback journal 原子替换本应用所有的定义
   ↓
 新请求使用新 Model 定义
 ```

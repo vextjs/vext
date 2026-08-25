@@ -4,10 +4,11 @@ import { join, extname, dirname, relative } from "node:path";
 import { createRequire } from "node:module";
 import type { VextApp } from "../types/app.js";
 import type { VextInternalHooks } from "../types/hooks.js";
-import type { VextPlugin } from "../types/plugin.js";
+import type { VextPlugin, VextPluginContext } from "../types/plugin.js";
 import { resolveModuleDefault } from "./interop.js";
 import { pathToFileURL } from "node:url";
 import type { StartupProfiler } from "./startup-profiler.js";
+import { beginAppMutationTransaction } from "./app.js";
 
 // ── ESM-only 包兼容层 ─────────────────────────────────────────
 //
@@ -33,30 +34,59 @@ interface PackageRequest {
   exportKey: string;
 }
 
-/** ESM-only 包的预加载缓存：pkgId → 模块命名空间对象 */
+/** ESM-only 包的预加载缓存：实际入口绝对路径 → 模块命名空间对象 */
 const _esmPreloadCache = new Map<string, Record<string, unknown>>();
+const _esmPreloadedRequests = new Set<string>();
 
-/** 是否已 patch Module._load */
-let _moduleLoadPatched = false;
+let _moduleLoadPatchUsers = 0;
+let _restoreModuleLoadPatch: (() => void) | undefined;
 
 /**
  * （一次性）patch Node.js Module._load，拦截对已预加载 ESM 包的 require()。
  *
  * 使用 _req("node:module") 而非全局 require()（ESM 上下文无全局 require）。
  */
-function _ensureModuleLoadPatch(): void {
-  if (_moduleLoadPatched) return;
-  _moduleLoadPatched = true;
-
+function _acquireModuleLoadPatch(): () => void {
   const Module = _req("node:module") as {
     _load: (request: string, ...args: unknown[]) => unknown;
   };
-  const _orig = Module._load;
-  Module._load = function (request: string, ...args: unknown[]) {
-    if (_esmPreloadCache.has(request)) {
-      return _esmPreloadCache.get(request);
+  if (_moduleLoadPatchUsers === 0) {
+    const originalLoad = Module._load;
+    const patchedLoad = function (
+      this: unknown,
+      request: string,
+      ...args: unknown[]
+    ) {
+      const parent = args[0] as { filename?: string } | undefined;
+      if (_esmPreloadedRequests.has(request) && parent?.filename) {
+        const resolver = createRequire(parent.filename);
+        const entryPath = _resolveEsmEntryPath(request, resolver);
+        if (entryPath && _esmPreloadCache.has(entryPath)) {
+          return _esmPreloadCache.get(entryPath);
+        }
+      }
+      return originalLoad.call(this, request, ...args);
+    };
+    Module._load = patchedLoad;
+    _restoreModuleLoadPatch = () => {
+      if (Module._load === patchedLoad) {
+        Module._load = originalLoad;
+      }
+    };
+  }
+  _moduleLoadPatchUsers += 1;
+
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    _moduleLoadPatchUsers -= 1;
+    if (_moduleLoadPatchUsers === 0) {
+      _restoreModuleLoadPatch?.();
+      _restoreModuleLoadPatch = undefined;
+      _esmPreloadCache.clear();
+      _esmPreloadedRequests.clear();
     }
-    return _orig.call(this, request, ...args);
   };
 }
 
@@ -232,14 +262,16 @@ async function _preloadEsmDeps(compiledFilePath: string): Promise<void> {
   }
 
   for (const requestId of candidates) {
-    if (_esmPreloadCache.has(requestId)) continue;
     if (!_isEsmOnly(requestId, resolver)) continue;
 
     try {
       const esmEntryPath = _resolveEsmEntryPath(requestId, resolver);
       if (!esmEntryPath) continue;
-      const mod = await import(pathToFileUrl(esmEntryPath));
-      _esmPreloadCache.set(requestId, mod as Record<string, unknown>);
+      if (!_esmPreloadCache.has(esmEntryPath)) {
+        const mod = await import(pathToFileUrl(esmEntryPath));
+        _esmPreloadCache.set(esmEntryPath, mod as Record<string, unknown>);
+      }
+      _esmPreloadedRequests.add(requestId);
     } catch {
       // 预加载失败，忽略（让 require() 在运行时自然报错，给出真实错误信息）
     }
@@ -475,10 +507,11 @@ async function loadPluginFile(
   filePath: string,
   _pluginsDir: string,
 ): Promise<VextPlugin> {
+  let releaseModuleLoadPatch: (() => void) | undefined;
   try {
     // ESM-only 兼容：预加载此插件依赖的 ESM-only 包，注入 Module._load 缓存
-    _ensureModuleLoadPatch();
     await _preloadEsmDeps(filePath);
+    releaseModuleLoadPatch = _acquireModuleLoadPatch();
 
     const fileUrl = pathToFileUrl(filePath);
     const mod = await import(fileUrl);
@@ -537,6 +570,8 @@ async function loadPluginFile(
       `[vextjs] Failed to load plugin file: ${filePath}\n` +
         `         ${(err as Error).message}`,
     );
+  } finally {
+    releaseModuleLoadPatch?.();
   }
 }
 
@@ -735,6 +770,9 @@ async function executeSetupWithTimeout(
   let timer: ReturnType<typeof setTimeout> | undefined;
   const startedAt = performance.now();
   const hooks = app.hooks as VextInternalHooks;
+  const controller = new AbortController();
+  const transaction = beginAppMutationTransaction(app);
+  const setupContext = createRevocablePluginContext(app, plugin.name);
 
   try {
     await hooks.emit("plugin:beforeSetup", {
@@ -742,33 +780,11 @@ async function executeSetupWithTimeout(
       sourceFile,
     });
 
+    const setupPromise = Promise.resolve().then(() =>
+      plugin.setup(setupContext.context, { signal: controller.signal }),
+    );
     await Promise.race([
-      // setup 执行
-      Promise.resolve(plugin.setup(app)).then((result) => {
-        // setup 完成后立即清理定时器
-        if (timer !== undefined) {
-          clearTimeout(timer);
-          timer = undefined;
-        }
-
-        // ── 自动注册插件级生命周期钩子（onReady / onClose）──
-        //
-        // 插件可以在对象上声明 onReady / onClose 可选方法，
-        // plugin-loader 在 setup() 成功完成后自动将它们注册到 app 的生命周期。
-        // 这等价于在 setup() 内手动调用 app.onReady(() => ...) / app.onClose(() => ...)，
-        // 但语义更清晰，与 setup 形成完整的生命周期三件套。
-        //
-        if (typeof plugin.onReady === "function") {
-          app.onReady(() => plugin.onReady!(app));
-        }
-        if (typeof plugin.onClose === "function") {
-          app.onClose(() => plugin.onClose!(app));
-        }
-
-        return result;
-      }),
-
-      // 超时保护
+      setupPromise,
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
           timer = undefined;
@@ -783,12 +799,29 @@ async function executeSetupWithTimeout(
         }, timeoutMs);
       }),
     ]);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+    setupContext.revoke();
+
+    // Auto lifecycle hooks are committed only after setup wins the deadline.
+    if (typeof plugin.onReady === "function") {
+      app.onReady(() => plugin.onReady!(app));
+    }
+    if (typeof plugin.onClose === "function") {
+      app.onClose(() => plugin.onClose!(app));
+    }
+    transaction.commit();
     hooks.emitSafeSync("plugin:afterSetup", {
       plugin: plugin.name,
       sourceFile,
       durationMs: Math.round(performance.now() - startedAt),
     });
   } catch (err) {
+    if (!controller.signal.aborted) controller.abort(err);
+    setupContext.revoke();
+    transaction.rollback();
     // 确保异常时也清理定时器
     if (timer !== undefined) {
       clearTimeout(timer);
@@ -814,6 +847,74 @@ async function executeSetupWithTimeout(
         `         ${(err as Error).message}`,
     );
   }
+}
+
+const PLUGIN_SETUP_MUTATION_METHODS = new Set<PropertyKey>([
+  "extend",
+  "setValidator",
+  "setThrow",
+  "setLogger",
+  "setRateLimiter",
+  "setRequestIdGenerator",
+  "onClose",
+  "onReady",
+  "use",
+]);
+
+function createRevocablePluginContext(
+  app: VextApp,
+  pluginName: string,
+): { context: VextPluginContext; revoke(): void } {
+  let active = true;
+  const methodCache = new Map<PropertyKey, unknown>();
+  const assertActive = (operation: PropertyKey): void => {
+    if (!active) {
+      throw new Error(
+        `[vextjs] Plugin "${pluginName}" setup context is closed; ${String(operation)} cannot run after setup completion or timeout.`,
+      );
+    }
+  };
+  const context = new Proxy(app, {
+    get(target, property) {
+      const value = Reflect.get(target, property, target);
+      if (
+        typeof value !== "function" ||
+        !PLUGIN_SETUP_MUTATION_METHODS.has(property)
+      ) {
+        return value;
+      }
+      if (!methodCache.has(property)) {
+        methodCache.set(property, (...args: unknown[]) => {
+          assertActive(property);
+          return Reflect.apply(value, target, args);
+        });
+      }
+      return methodCache.get(property);
+    },
+    set(target, property, value) {
+      assertActive(property);
+      return Reflect.set(target, property, value, target);
+    },
+    deleteProperty(target, property) {
+      assertActive(property);
+      return Reflect.deleteProperty(target, property);
+    },
+    defineProperty(target, property, descriptor) {
+      assertActive(property);
+      if (descriptor.configurable === false) {
+        throw new Error(
+          `[vextjs] Plugin "${pluginName}" cannot define a non-configurable app property during setup.`,
+        );
+      }
+      return Reflect.defineProperty(target, property, descriptor);
+    },
+  }) as unknown as VextPluginContext;
+  return {
+    context,
+    revoke() {
+      active = false;
+    },
+  };
 }
 
 // ── 工具函数 ──────────────────────────────────────────────────

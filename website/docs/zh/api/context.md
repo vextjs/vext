@@ -19,6 +19,7 @@
 | `body`        | `unknown`                               | 请求体（由 body-parser 中间件填充）                                                                   |
 | `headers`     | `Record<string, string \| undefined>`   | 请求头（全部小写 key）                                                                                |
 | `app`         | `VextApp`                               | 当前请求所属的应用实例                                                                                |
+| `signal`      | `AbortSignal`                           | 客户端连接关闭或路由期限到达时中止；应传给支持取消的下游操作                                          |
 | `requestId`   | `string`                                | 请求唯一标识                                                                                          |
 | `ip`          | `string`                                | 客户端 IP                                                                                             |
 | `protocol`    | `'http' \| 'https'`                     | 请求协议                                                                                              |
@@ -188,6 +189,23 @@ export default defineMiddleware(async (req, _res, next) => {
 | `req.app.config`   | 运行时配置       |
 | `req.app.services` | 已注入的服务实例 |
 | `req.app.fetch`    | 内置 HTTP 客户端 |
+
+---
+
+### `signal`
+
+与请求生命周期绑定的 `AbortSignal`。客户端连接关闭时它会中止；启用路由超时中间件后，期限信号会与连接信号合并，因此下游操作可以感知任一取消来源。
+
+应将该信号传给支持取消的 API，并在信号中止后停止修改应用或响应状态：
+
+```typescript
+app.get("/report", async (req, res) => {
+  const upstream = await fetch("https://example.com/report", {
+    signal: req.signal,
+  });
+  res.json(await upstream.json());
+});
+```
 
 ---
 

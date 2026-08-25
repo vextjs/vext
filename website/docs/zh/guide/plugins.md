@@ -75,7 +75,14 @@ export default definePlugin({
 
 ### `setup()` — 初始化函数
 
-插件的核心逻辑。在 `bootstrap` 阶段由 `plugin-loader` 调用，支持异步操作（如连接数据库）。每个 `setup()` 有超时保护（默认 30 秒），超时后自动抛出错误。
+插件的核心逻辑。在 `bootstrap` 阶段由 `plugin-loader` 调用，支持异步操作（如连接数据库）。第二个参数是 `{ signal: AbortSignal }`，应把 `signal` 传给支持取消的 I/O。每个 `setup()` 都有硬超时（默认 30 秒）。失败或超时后，signal 会中止，通过 setup facade 产生的框架 mutation 会回滚，facade 随后被撤销，迟到 continuation 无法再修改应用状态。
+
+```typescript
+async setup(app, { signal }) {
+  const response = await fetch(app.config.remotePluginUrl, { signal });
+  app.extend("remotePluginData", await response.json());
+}
+```
 
 ### `onReady()` / `onClose()` — 生命周期钩子
 
@@ -416,7 +423,7 @@ definePlugin({ name: 'session', dependencies: ['query-cache', 'database'], setup
 
 ### 超时保护
 
-每个 `setup()` 有超时保护（默认 30 秒）。如果插件初始化超时（例如数据库连接超时），框架会抛出明确的错误信息。
+每个 `setup()` 都有硬超时（默认 30 秒）。初始化超时时，框架会中止 `context.signal`、回滚 setup 阶段的框架 mutation、撤销 setup facade，并抛出明确错误。插件仍负责自己在取消前创建的外部资源，因此必须响应 signal，并在自己的 `catch`/`finally` 路径关闭未完成初始化的 client。
 
 ## 实战示例
 

@@ -700,12 +700,17 @@ export default {
       // Whether to automatically register (default true)
       autoRegister: true,
 
+      // Discovery policy: strict (default) or lenient
+      validation: "strict",
+
       // External shared Model package (microservice scenario)
       sharedPackage: "@myproject/shared-models",
     },
   },
 };
 ```
+
+`validation: "strict"` completes discovery, imports, resolution, and validation before mutating the global Model registry. Any invalid definition, collision, or commit failure aborts startup and rolls back the whole registration plan. Explicit `"lenient"` mode warns and skips invalid discovery inputs only; registry collisions and commit failures still fail closed. Registrations are owned by the application and released on close without clearing another application's Models.
 
 ### Shared Model package (microservice scenario)
 
@@ -719,6 +724,8 @@ models: {
   dir: 'models', // Local Model (can override shared)
 }
 ```
+
+The shared package must default-export a model-definition object such as `{ User: { schema: ... } }`. Callback-style `registerModels()` packages are rejected because Vext cannot preflight, attribute ownership, or roll back keys registered through an opaque callback.
 
 ## Used in services
 
@@ -1049,9 +1056,9 @@ esbuild recompile → dist/models/item.js
   ↓
 model-reloader detected invalidated files
   ↓
-Save old definitions (rollback backup)
+Build and validate the complete replacement plan
   ↓
-Model.redefine("items", newDefinition)
+Atomically replace owned definitions with a rollback journal
   ↓
 New requests use new Model definition
 ```

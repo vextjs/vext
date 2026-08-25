@@ -119,6 +119,8 @@ seo: {
 
 build 模式必须配置 `publicOrigin`。产物会写入前端构建 closure，并以正确的 XML/TXT MIME 进入 deploy manifest。设置 `frontend.seo.index: false` 或 robots 包含 `noindex` 的静态路由不会进入 sitemap。URL 数量超过 `maxUrlsPerFile` 时会生成 sitemap index 与编号分片；默认上限为 50,000。
 
+完整 sitemap 集合还有独立预算：`maxUrls` 默认 100,000，`maxBytes` 默认 50 MiB 渲染后 UTF-8 输出，运行时 `timeoutMs` 默认 5,000 ms。任一预算超限时生成会立即停止并 fail closed；运行时期限会中止 provider signal。
+
 provider 只接收 `{ mode, origin, originKey, signal }`；Vext 不会向配置回调注入 `app`、services 或 `app.db`。动态条目应来自构建期安全模块或外部内容源，并正确响应 abort signal。
 
 ## 运行时 Sitemap 与动态域名
@@ -151,6 +153,8 @@ seo: {
 ```
 
 运行时请求的 `Host` 必须精确匹配 `publicOrigin` 或 `origins` 中的一项。未知 host 返回 404，不会生成受攻击者 Host 控制的 canonical 或 sitemap URL。路由或单次 render 可通过 `seo.originKey` 选择有限命名 origin；未声明 key 会 fail closed。
+
+配置的 origin 会按 trailing dot 与默认端口等规则规范化后比较 host，同时保留 `publicOrigin` 中的 pathname base，并用于 canonical、sitemap index、分片和 robots URL。运行时 SEO endpoint 同时支持 `GET` 与 `HEAD`；`HEAD` 返回相同 status 与 headers，但不输出实体 body。
 
 runtime sitemap 与 robots 响应使用 `Cache-Control: no-store`。只有在明确 host 和刷新策略后，才应在反向代理增加缓存。
 

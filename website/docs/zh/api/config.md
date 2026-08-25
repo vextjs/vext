@@ -68,6 +68,7 @@ export default defineBootstrapConfig({
 
 - provider 必须返回 plain object patch 或 `null`
 - patch 只支持 JSON-like 结构
+- `timeoutMs` 是硬期限：到期会中止 provider 的 `signal`，迟到 continuation 返回的 patch 会被丢弃，不会再合并
 - `required` 未声明时：`production` 默认 fail-fast，`development / test` 默认 warning 后继续
 - Cluster 模式下，同一启动周期会复用同一份 provider patch，避免 Master / Worker 看到不同结果
 
@@ -750,7 +751,7 @@ export default {
 
 ### `guardSecurityMap` 历史回退
 
-用于把只声明 middleware 的历史路由映射到 OpenAPI Security Scheme。新的 Auth 示例应优先通过本地 route guard helper 使用 `RouteOptions.auth`，让运行时保护和 OpenAPI security 共用同一个真相源：
+用于把只声明 middleware 的历史路由映射到 OpenAPI Security Scheme。新的 Auth 示例应把最终 `RouteOptions.auth` 内联到路由，或保存为同文件 `const`，让运行时保护、静态投影和 OpenAPI security 共用同一个真相源。有限静态语法不支持 route-options helper 调用：
 
 ```typescript
 // 仅用于历史兼容：没有 RouteOptions.auth 的 middleware 名称推断
@@ -864,6 +865,9 @@ export default {
 | `seo.sitemap.includeStatic`                            | `boolean`                            | `true`                                                       | 纳入成功静态页面产物，页面 SEO 显式排除时除外                                           |
 | `seo.sitemap.entries`                                  | `VextSitemapEntriesProvider`         | 无                                                           | 从 `{ mode, origin, originKey, signal }` 补充并校验条目                                 |
 | `seo.sitemap.maxUrlsPerFile`                           | `number`                             | `50000`                                                      | 超出后生成 sitemap index 与编号分片                                                     |
+| `seo.sitemap.maxUrls`                                  | `number`                             | `100000`                                                     | 整组 sitemap 可接受的最大 URL 数；超限时生成失败并保持关闭                              |
+| `seo.sitemap.maxBytes`                                 | `number`                             | `52428800`                                                   | 所有 sitemap 文档渲染后的 UTF-8 总字节上限                                              |
+| `seo.sitemap.timeoutMs`                                | `number`                             | `5000`                                                       | 运行时 provider、读取与渲染期限；超时会中止 provider 信号                               |
 | `seo.robots`                                           | `false \| VextFrontendRobotsConfig`  | `false`                                                      | 启用构建期或运行时 robots                                                               |
 | `seo.robots.mode`                                      | `'build' \| 'runtime'`               | `'build'`                                                    | 构建时写入产物或由 runtime endpoint 提供                                                |
 | `seo.robots.path`                                      | `'/robots.txt'`                      | `'/robots.txt'`                                              | 固定 robots pathname                                                                    |

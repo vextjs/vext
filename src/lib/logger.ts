@@ -9,7 +9,10 @@ import type {
   VextRuntimeLogger,
 } from "../types/app.js";
 
-const LOGGER_LIFECYCLE = Symbol("vext.logger.lifecycle");
+// Symbol.for keeps logger lifecycle metadata visible when CommonJS consumers
+// mix independently bundled public entrypoints such as vextjs and
+// vextjs/testing in the same process.
+const LOGGER_LIFECYCLE = Symbol.for("vext.logger.lifecycle");
 
 export interface CreateLoggerOptions {
   requestContextEnabled?: boolean;

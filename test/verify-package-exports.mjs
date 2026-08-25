@@ -131,6 +131,33 @@ for (const entry of cjsEntrypoints) {
   }
 }
 
+const cjsRoot = require("vextjs");
+const cjsTesting = require("vextjs/testing");
+const cjsTestApp = await cjsTesting.createTestApp({
+  services: false,
+  routes: false,
+  middlewares: false,
+  plugins: false,
+});
+try {
+  let thrown;
+  try {
+    cjsTestApp.app.throw(418, "teapot");
+  } catch (error) {
+    thrown = error;
+  }
+  assert.ok(
+    thrown instanceof cjsRoot.HttpError,
+    "CJS root must recognize HttpError created through vextjs/testing",
+  );
+  assert.ok(
+    cjsRoot.getLoggerLifecycle(cjsTestApp.app.logger),
+    "CJS root must read logger lifecycle created through vextjs/testing",
+  );
+} finally {
+  await cjsTestApp.close();
+}
+
 const packageTargets = Object.values(packageJson.exports).flatMap(
   (conditions) => Object.values(conditions),
 );

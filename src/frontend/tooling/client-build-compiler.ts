@@ -33,6 +33,10 @@ import { createJscssBuildDefines } from "./jscss-extractor.js";
 import { writeStaticFrontendArtifacts } from "./static-artifact-writer.js";
 import { writeFrontendMediaArtifacts } from "./media-artifact-writer.js";
 import { writeFrontendSeoArtifacts } from "./seo-artifact-writer.js";
+import {
+  assertPathInside,
+  assertSafeProjectOutputDirectory,
+} from "../../lib/path-boundary.js";
 
 export interface BuildFrontendClientOptions {
   rootDir: string;
@@ -69,6 +73,17 @@ export async function buildFrontendClient(
   if (!config.enabled) {
     return { skipped: true, config, warnings: [] };
   }
+
+  assertSafeProjectOutputDirectory(
+    options.rootDir,
+    config.outDir,
+    "config.frontend.outDir",
+  );
+  assertPathInside(
+    config.outDir,
+    config.build.server.outFile,
+    "config.frontend.build.server.outFile",
+  );
 
   await rm(config.outDir, { recursive: true, force: true });
   await mkdir(config.outDir, { recursive: true });

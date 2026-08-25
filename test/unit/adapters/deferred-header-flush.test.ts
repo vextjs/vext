@@ -77,5 +77,64 @@ export default defineRoutes((app) => {
         await rm(root, { recursive: true, force: true });
       }
     });
+
+    it(`${adapter} replaces a staged success when session persistence fails`, async () => {
+      const root = resolve(
+        process.cwd(),
+        `tmp-session-barrier-test-${adapter}`,
+      );
+      const distEntry = resolve(process.cwd(), "dist/index.js");
+      const esm = pathToFileURL(distEntry).href;
+      await rm(root, { recursive: true, force: true });
+      await mkdir(resolve(root, "src/routes"), { recursive: true });
+      await writeFile(
+        resolve(root, "package.json"),
+        JSON.stringify({ type: "module" }),
+      );
+      await writeFile(
+        resolve(root, "src/routes/index.mjs"),
+        `import { defineRoutes } from ${JSON.stringify(esm)};
+export default defineRoutes((app) => {
+  app.get("/session-failure", async (req, res) => {
+    req.session.userId = "u1";
+    res.json({ ok: true });
+  });
+});
+`,
+      );
+      const store = {
+        async get() {
+          return null;
+        },
+        async set() {
+          throw new Error("store unavailable");
+        },
+        async delete() {},
+      };
+      const app = await createTestApp({
+        rootDir: root,
+        services: false,
+        middlewares: false,
+        config: {
+          adapter,
+          logger: { level: "silent" },
+          response: { wrap: false },
+          cors: { enabled: false },
+          rateLimit: { enabled: false },
+          accessLog: { enabled: false },
+          session: { enabled: true, store, ttl: 60 },
+        },
+      });
+
+      try {
+        const response = await app.request.get("/session-failure");
+        expect(response.status).toBe(500);
+        expect(response.body).not.toEqual({ ok: true });
+        expect(response.headers["set-cookie"]).toBeUndefined();
+      } finally {
+        await app.close();
+        await rm(root, { recursive: true, force: true });
+      }
+    });
   }
 });

@@ -75,7 +75,14 @@ export default definePlugin({
 
 ### `setup()` — initialization function
 
-The core logic of the plug-in. Called by `plugin-loader` in the `bootstrap` stage, it supports asynchronous operations (such as connecting to the database). Each `setup()` has timeout protection (default 30 seconds), and an error is automatically thrown after the timeout.
+The core logic of the plug-in. Called by `plugin-loader` in the `bootstrap` stage, it supports asynchronous operations (such as connecting to the database). Its second argument is `{ signal: AbortSignal }`; pass `signal` to cancellable I/O. Each `setup()` has a hard timeout (default 30 seconds). On failure or timeout, the signal is aborted, framework mutations made through the setup facade are rolled back, and that facade is revoked so a late continuation cannot mutate application state.
+
+```typescript
+async setup(app, { signal }) {
+  const response = await fetch(app.config.remotePluginUrl, { signal });
+  app.extend("remotePluginData", await response.json());
+}
+```
 
 ### `onReady()` / `onClose()` — life cycle hook
 
@@ -416,7 +423,7 @@ If there is a circular dependency (A → B → A), the framework will report a F
 
 ### Timeout protection
 
-Each `setup()` is protected by a timeout (default 30 seconds). If the plugin initialization times out (for example, the database connection times out), the framework will throw an explicit error message.
+Each `setup()` is protected by a hard timeout (default 30 seconds). If initialization times out, the framework aborts `context.signal`, rolls back setup-time framework mutations, revokes the setup facade, and throws an explicit error. A plugin still owns external resources it created before cancellation, so it must honor the signal and close partially created clients in its own `catch`/`finally` path.
 
 ## Practical example
 

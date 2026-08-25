@@ -1,7 +1,11 @@
 import { existsSync } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { lstat, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import fg from "fast-glob";
+import {
+  normalizeSafeRelativePath,
+  resolvePathInside,
+} from "../../lib/path-boundary.js";
 import type {
   ResolvedVextFrontendConfig,
   VextFrontendDeployManifest,
@@ -44,11 +48,22 @@ export async function buildFrontendDeployManifest(
   const assets: VextFrontendDeployManifestAsset[] = [];
 
   for (const file of files) {
-    const absolutePath = path.join(options.config.outDir, file);
-    const [content, fileStat] = await Promise.all([
+    const absolutePath = resolvePathInside(
+      options.config.outDir,
+      file,
+      "frontend deploy asset file",
+      { realpath: true },
+    );
+    const [content, fileStat, linkStat] = await Promise.all([
       readFile(absolutePath),
       stat(absolutePath),
+      lstat(absolutePath),
     ]);
+    if (!fileStat.isFile() || linkStat.isSymbolicLink()) {
+      throw new Error(
+        `[vextjs] frontend deploy asset must be a regular file inside outDir: ${file}`,
+      );
+    }
     const source = classifyDeployAssetSource(options.config, file);
     assets.push({
       file,
@@ -119,6 +134,7 @@ async function scanDeployableFiles(
     cwd: config.outDir,
     onlyFiles: true,
     dot: true,
+    followSymbolicLinks: false,
     ignore: ["server/**", ...config.deploy.upload.exclude],
   });
   return files
@@ -135,16 +151,11 @@ function classifyDeployAssetSource(
 }
 
 function normalizeRelativeFile(value: string): string {
-  const normalized = value.replace(/\\/g, "/").replace(/^\/+/u, "");
-  if (
-    normalized === "" ||
-    normalized.startsWith("../") ||
-    normalized.includes("/../") ||
-    normalized === ".."
-  ) {
+  try {
+    return normalizeSafeRelativePath(value, "frontend deploy asset path");
+  } catch {
     throw new Error(`[vextjs] Invalid frontend deploy asset path: ${value}`);
   }
-  return normalized;
 }
 
 function readAdapterName(

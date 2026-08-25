@@ -21,6 +21,15 @@ const docsSiteUrl = (
 const packageMetadata = JSON.parse(
   readFileSync(path.join(repositoryRoot, "package.json"), "utf8"),
 );
+const docsVersions = JSON.parse(
+  readFileSync(path.join(websiteRoot, "version-channels.json"), "utf8"),
+);
+
+if (!new Set(["stable", "next"]).has(docsVersions.channel)) {
+  throw new Error(
+    `Unsupported documentation channel: ${String(docsVersions.channel)}`,
+  );
+}
 
 const curatedLlmsSections = [
   {
@@ -253,7 +262,7 @@ function readDocumentationEntries() {
             ? ["developers", "engineering-leads"]
             : ["developers"],
         appliesTo: appliesToForRoute(route),
-        stability: "stable",
+        stability: docsVersions.channel,
         sourcePath: `website/docs/${relativePath}`,
         contentHash: createHash("sha256").update(source).digest("hex"),
         source,
@@ -488,6 +497,9 @@ function main() {
   const manifest = {
     schemaVersion: "vext.docs-manifest/v1",
     frameworkVersion: packageMetadata.version,
+    channel: docsVersions.channel,
+    stableVersion: docsVersions.stable,
+    nextVersion: docsVersions.next,
     defaultLocale: "en",
     siteUrl: `${docsSiteUrl}/`,
     entries: manifestEntries,

@@ -611,6 +611,32 @@ export default defineRoutes((app) => {
     );
   });
 
+  it("ignores non-registrar app configuration while projecting direct routes", async () => {
+    projectRoot = await mkdtemp(
+      join(tmpdir(), "vext-route-index-app-capability-"),
+    );
+    await writeProjectFile(
+      projectRoot,
+      "src/routes/index.ts",
+      `import { defineRoutes } from "vextjs";
+export default defineRoutes((app) => {
+  if (process.env.CUSTOM_LIMITER === "true") {
+    app.setRateLimiter({
+      async check() {
+        return { allowed: true, remaining: 1, resetAt: 1 };
+      },
+    });
+  }
+  app.get("/real", async (_req, res) => res.json({ ok: true }));
+});
+`,
+    );
+
+    await expect(buildRouteIndex(projectRoot)).resolves.toMatchObject([
+      { method: "GET", path: "/real" },
+    ]);
+  });
+
   it("fails closed for an unbraced conditional route registration", async () => {
     projectRoot = await mkdtemp(
       join(tmpdir(), "vext-route-index-unbraced-conditional-"),
@@ -711,7 +737,7 @@ export default defineRoutes((app) => {
     await expect(buildRouteIndex(projectRoot)).rejects.toThrow(error);
   });
 
-  it("fails closed when a referenced same-file const binding is ambiguous", async () => {
+  it("resolves top-level const bindings without treating nested shadowing as ambiguous", async () => {
     projectRoot = await mkdtemp(join(tmpdir(), "vext-route-index-ambiguous-"));
     await writeProjectFile(
       projectRoot,
@@ -731,8 +757,171 @@ function shadowedScope() {
 `,
     );
 
+    const [entry] = await buildRouteIndex(projectRoot);
+    expect(entry?.schema.request.query?.schema).toMatchObject({
+      properties: { page: expect.any(Object) },
+      required: ["page"],
+    });
+  });
+
+  it("preserves route contracts across comments and trailing const comments", async () => {
+    projectRoot = await mkdtemp(join(tmpdir(), "vext-route-index-comments-"));
+    await writeProjectFile(
+      projectRoot,
+      "src/routes/index.ts",
+      `import { defineRoutes } from "vextjs";
+const sharedOptions = { validate: { query: { page: "integer!" } } } // shared
+export default defineRoutes((app) => {
+  app.post("/users", {
+    // request contract
+    validate: { body: { name: "string!" } },
+    // frontend contract
+    frontend: { mode: "static" },
+    // docs contract
+    docs: { summary: "Create user" },
+  }, handler);
+  app.get("/items", {
+    validate: { query: { cursor: "string!" } }, // query contract
+    frontend: { mode: "static" },
+  }, handler);
+  app.get("/shared", sharedOptions, handler);
+});
+`,
+    );
+
+    const entries = await buildRouteIndex(projectRoot);
+    const users = entries.find((entry) => entry.path === "/users");
+    const items = entries.find((entry) => entry.path === "/items");
+    const shared = entries.find((entry) => entry.path === "/shared");
+    expect(users).toMatchObject({
+      docsSummary: "Create user",
+      docsKind: "frontend-route",
+      freshness: { mode: "static", source: "route-options" },
+    });
+    expect(users?.schema.request.body).toBeDefined();
+    expect(items?.schema.request.query).toBeDefined();
+    expect(items?.docsKind).toBe("frontend-route");
+    expect(shared?.schema.request.query).toBeDefined();
+  });
+
+  it.each([
+    ["bracket", 'app["get"]("/bracket", handler);'],
+    ["extraction", 'const get = app.get; get("/extracted", handler);'],
+    ["destructuring", 'const { get } = app; get("/destructured", handler);'],
+    ["helper", "registerUsers(app);"],
+    [
+      "comma sequence",
+      'app.get("/first", handler), app.get("/second", handler);',
+    ],
+  ])(
+    "fails closed for non-canonical registration: %s",
+    async (_label, body) => {
+      projectRoot = await mkdtemp(
+        join(tmpdir(), "vext-route-index-canonical-"),
+      );
+      await writeProjectFile(
+        projectRoot,
+        "src/routes/index.ts",
+        `import { defineRoutes } from "vextjs";
+function registerUsers(app) { app.get("/helper", handler); }
+export default defineRoutes((app) => { ${body} });
+`,
+      );
+
+      await expect(buildRouteIndex(projectRoot)).rejects.toThrow(
+        /direct top-level statement/u,
+      );
+    },
+  );
+
+  it.each([
+    ["missing", 'app.get("/missing");'],
+    ["object", 'app.get("/object", {});'],
+    ["string", 'app.get("/string", "not-a-handler");'],
+  ])("rejects invalid route arity/handler shape: %s", async (_label, body) => {
+    projectRoot = await mkdtemp(join(tmpdir(), "vext-route-index-arity-"));
+    await writeProjectFile(
+      projectRoot,
+      "src/routes/index.ts",
+      `import { defineRoutes } from "vextjs";
+export default defineRoutes((app) => { ${body} });
+`,
+    );
     await expect(buildRouteIndex(projectRoot)).rejects.toThrow(
-      /src\/routes\/index\.ts GET \/items route options.*ambiguous same-file const binding "routeOptions"/u,
+      /route call must use exactly|route handler must be a function/u,
+    );
+  });
+
+  it("supports typed top-level consts and derives docsKind from handler bindings", async () => {
+    projectRoot = await mkdtemp(join(tmpdir(), "vext-route-index-typed-"));
+    await writeProjectFile(
+      projectRoot,
+      "src/routes/index.ts",
+      `import { defineRoutes } from "vextjs";
+const ROUTE_PATH: string = "/typed";
+const pageHandler = async (req, res) => {
+  const ROUTE_PATH = req.path;
+  return res.render("index", { ROUTE_PATH });
+};
+export default defineRoutes((app) => { app.get(ROUTE_PATH, pageHandler); });
+`,
+    );
+
+    await expect(buildRouteIndex(projectRoot)).resolves.toEqual([
+      expect.objectContaining({ path: "/typed", docsKind: "frontend-route" }),
+    ]);
+  });
+
+  it("rejects CommonJS route sources with an explicit product-contract error", async () => {
+    projectRoot = await mkdtemp(join(tmpdir(), "vext-route-index-cjs-"));
+    await writeProjectFile(
+      projectRoot,
+      "src/routes/index.cjs",
+      `const { defineRoutes } = require("vextjs");
+module.exports = defineRoutes((app) => { app.get("/cjs", handler); });
+`,
+    );
+
+    await expect(buildRouteIndex(projectRoot)).rejects.toThrow(
+      /unsupported CommonJS route source/u,
+    );
+  });
+
+  it("rejects route-file topology collisions before projecting entries", async () => {
+    projectRoot = await mkdtemp(join(tmpdir(), "vext-route-index-topology-"));
+    for (const [file, routePath] of [
+      ["src/routes/users.ts", "/a"],
+      ["src/routes/users/index.ts", "/b"],
+    ]) {
+      await writeProjectFile(
+        projectRoot,
+        file,
+        `import { defineRoutes } from "vextjs";
+export default defineRoutes((app) => { app.get("${routePath}", handler); });
+`,
+      );
+    }
+
+    await expect(buildRouteIndex(projectRoot)).rejects.toThrow(
+      /Route prefix conflict detected/u,
+    );
+  });
+
+  it("rejects case and trailing-slash duplicate identities", async () => {
+    projectRoot = await mkdtemp(join(tmpdir(), "vext-route-index-identity-"));
+    await writeProjectFile(
+      projectRoot,
+      "src/routes/index.ts",
+      `import { defineRoutes } from "vextjs";
+export default defineRoutes((app) => {
+  app.get("/Users", handler);
+  app.get("/users/", handler);
+});
+`,
+    );
+
+    await expect(buildRouteIndex(projectRoot)).rejects.toThrow(
+      /Duplicate route identity GET \/users/iu,
     );
   });
 

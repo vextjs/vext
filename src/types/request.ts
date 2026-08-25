@@ -133,6 +133,16 @@ export interface VextRequest<
   app: VextApp;
 
   /**
+   * 请求生命周期取消信号。
+   *
+   * 连接关闭或响应完成后会进入 aborted 状态；配置了 RouteOptions.timeout 时，
+   * 超时也会触发取消。执行数据库、远程请求或队列写入等可取消操作时，应把该
+   * signal 继续传给下游，并在不可取消的提交前检查 `req.signal.aborted`。
+   * 框架会阻止超时后的重复响应，但业务侧外部副作用仍需协作式取消。
+   */
+  signal: AbortSignal;
+
+  /**
    * 请求唯一标识
    *
    * - 默认：从 x-request-id 请求头透传，不存在则框架自动生成 UUID v4

@@ -112,34 +112,43 @@ export function normalizeSeoTextList(
 
 export function normalizeSeoPathname(value: unknown, label: string): string {
   const pathname = normalizeSeoSafeText(value, label);
-  let decoded: string;
-  try {
-    decoded = decodeURIComponent(pathname);
-  } catch {
-    throw new Error(`[vextjs] ${label} contains invalid URL encoding.`);
-  }
   if (
     !pathname.startsWith("/") ||
     pathname.startsWith("//") ||
     pathname.includes("?") ||
     pathname.includes("#") ||
-    pathname.includes("\\") ||
-    !decoded.startsWith("/") ||
-    decoded.startsWith("//") ||
-    decoded.includes("?") ||
-    decoded.includes("#") ||
-    decoded.includes("\\")
+    pathname.includes("\\")
   ) {
     throw new Error(
       `[vextjs] ${label} must be an absolute pathname without query or hash.`,
     );
   }
-  if (CONTROL_CHARACTERS.test(decoded)) {
-    throw new Error(
-      `[vextjs] ${label} must not contain control characters or line separators.`,
+  const segments = pathname.split("/").map((segment, index) => {
+    if (index === 0) return "";
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(segment);
+    } catch {
+      throw new Error(`[vextjs] ${label} contains invalid URL encoding.`);
+    }
+    if (
+      decoded.includes("/") ||
+      decoded.includes("\\") ||
+      decoded === "." ||
+      decoded === ".." ||
+      CONTROL_CHARACTERS.test(decoded)
+    ) {
+      throw new Error(
+        `[vextjs] ${label} contains a non-canonical or unsafe path segment.`,
+      );
+    }
+    return encodeURIComponent(decoded).replace(
+      /[!'()*]/gu,
+      (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
     );
-  }
-  return pathname;
+  });
+  const normalized = segments.join("/");
+  return normalized === "/" ? normalized : normalized.replace(/\/+$/u, "");
 }
 
 function normalizeMetadataRecord(

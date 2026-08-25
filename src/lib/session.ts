@@ -54,11 +54,16 @@ interface MemorySessionEntry {
 }
 
 export interface VextMemorySessionStore extends VextSessionStore {
+  clearExpired(maxEntries?: number): void;
   size(): number;
 }
 
 export function createMemorySessionStore(): VextMemorySessionStore {
   const entries = new Map<string, MemorySessionEntry>();
+  const opportunisticSweepInterval = 64;
+  const opportunisticSweepBatchSize = 32;
+  let operationsUntilSweep = opportunisticSweepInterval;
+  let sweepIterator: MapIterator<[string, MemorySessionEntry]> | undefined;
 
   function now(): number {
     return Date.now();
@@ -79,8 +84,16 @@ export function createMemorySessionStore(): VextMemorySessionStore {
     return entry.expiresAt <= now();
   }
 
+  function maybeSweepExpired(): void {
+    operationsUntilSweep -= 1;
+    if (operationsUntilSweep > 0) return;
+    operationsUntilSweep = opportunisticSweepInterval;
+    store.clearExpired(opportunisticSweepBatchSize);
+  }
+
   const store: VextMemorySessionStore = {
     get(id) {
+      maybeSweepExpired();
       const entry = entries.get(id);
       if (!entry) return null;
       if (isExpired(entry)) {
@@ -92,6 +105,7 @@ export function createMemorySessionStore(): VextMemorySessionStore {
     },
 
     set(id, data, ttlSeconds) {
+      maybeSweepExpired();
       entries.set(id, {
         data: cloneSessionData(data),
         expiresAt: expiresIn(ttlSeconds),
@@ -99,10 +113,12 @@ export function createMemorySessionStore(): VextMemorySessionStore {
     },
 
     delete(id) {
+      maybeSweepExpired();
       entries.delete(id);
     },
 
     touch(id, ttlSeconds) {
+      maybeSweepExpired();
       const entry = entries.get(id);
       if (!entry) return;
       if (isExpired(entry)) {
@@ -112,8 +128,21 @@ export function createMemorySessionStore(): VextMemorySessionStore {
       entry.expiresAt = expiresIn(ttlSeconds);
     },
 
-    clearExpired() {
-      for (const [id, entry] of entries) {
+    clearExpired(maxEntries = Number.POSITIVE_INFINITY) {
+      if (entries.size === 0) {
+        sweepIterator = undefined;
+        return;
+      }
+      sweepIterator ??= entries.entries();
+      let inspected = 0;
+      while (inspected < maxEntries) {
+        const item = sweepIterator.next();
+        if (item.done) {
+          sweepIterator = undefined;
+          break;
+        }
+        inspected += 1;
+        const [id, entry] = item.value;
         if (isExpired(entry)) entries.delete(id);
       }
     },
@@ -252,10 +281,20 @@ function createSessionRuntime(
     requestState[SESSION_ATTACHED_SYMBOL] = true;
     req.session = createSessionProxy(req, res, config, state);
     let committedOnSend = false;
+    let unsafeTerminalSend = false;
     const previousOnBeforeSend = res._onBeforeSend;
 
     res._onBeforeSend = (kind, data, statusCode, headers) => {
       if (config.autoCommit) {
+        if (
+          (kind === "stream" || kind === "download") &&
+          shouldCommitSession(state, config.rolling)
+        ) {
+          unsafeTerminalSend = true;
+          throw new Error(
+            "[vextjs] Dirty sessions must await req.session.save() before stream() or download().",
+          );
+        }
         commitSessionForSend(req, res, config, state, {
           force: config.rolling,
           headers,
@@ -273,7 +312,7 @@ function createSessionRuntime(
     }
 
     let commitError: unknown;
-    if (config.autoCommit) {
+    if (config.autoCommit && !unsafeTerminalSend) {
       try {
         if (committedOnSend) {
           await state.pendingCommit;
@@ -287,14 +326,22 @@ function createSessionRuntime(
       }
     }
 
-    if (commitError && (downstreamError || committedOnSend)) {
-      req.app.logger.error(
-        { error: toErrorMessage(commitError) },
-        "[vextjs] session commit failed after response processing started",
-      );
+    if (
+      (downstreamError || commitError) &&
+      (committedOnSend || unsafeTerminalSend)
+    ) {
+      const discarded = res._discardPendingSend?.();
+      if (discarded === false && res._isSent()) {
+        req.app.logger.error(
+          {
+            error: toErrorMessage(commitError ?? downstreamError),
+          },
+          "[vextjs] session failure occurred after the response was already flushed",
+        );
+      }
     }
     if (downstreamError) throw downstreamError;
-    if (commitError && !committedOnSend) throw commitError;
+    if (commitError) throw commitError;
   };
 
   Object.defineProperty(middleware, SESSION_MIDDLEWARE_SYMBOL, {
@@ -513,16 +560,33 @@ function commitSessionForSend(
   }
 
   const data = extractSessionData(state.target);
-  const commit =
-    !state.dirty && options.force && !state.isNew && config.store.touch
-      ? config.store.touch(state.id, config.ttl)
-      : config.store.set(state.id, data, config.ttl);
+  res._sessionCommitPending = true;
+  state.pendingCommit = Promise.resolve()
+    .then(() =>
+      !state.dirty && options.force && !state.isNew && config.store.touch
+        ? config.store.touch(state.id, config.ttl)
+        : config.store.set(state.id, data, config.ttl),
+    )
+    .then(() => {
+      writeSessionCookie(req, res, config, state, options.headers);
+      state.isNew = false;
+      state.dirty = false;
+      state.saved = true;
+    })
+    .finally(() => {
+      res._sessionCommitPending = false;
+    });
+  // Attach an observer immediately: an already-rejected store promise can
+  // otherwise be reported as unhandled before onion unwinding reaches the
+  // barrier await below. The original promise remains rejected and is still
+  // propagated to the adapter error path.
+  void state.pendingCommit.catch(() => {});
+}
 
-  state.pendingCommit = Promise.resolve(commit).then(() => undefined);
-  writeSessionCookie(req, res, config, state, options.headers);
-  state.isNew = false;
-  state.dirty = false;
-  state.saved = true;
+function shouldCommitSession(state: SessionState, force: boolean): boolean {
+  if (state.destroyed) return false;
+  if (state.saved && !state.dirty) return false;
+  return state.dirty || force;
 }
 
 function extractSessionData(target: Record<string, unknown>): VextSessionData {

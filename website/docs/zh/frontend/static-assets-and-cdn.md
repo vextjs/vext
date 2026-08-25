@@ -25,6 +25,8 @@ export function Logo() {
 
 前端 static mount 会发送 `ETag` 和 `Last-Modified` validator。条件请求 `If-None-Match` 与 `If-Modified-Since` 可返回无实体 body 的 `304`。
 
+Static request path 会在访问文件系统前完成 canonicalization。绝对路径、编码后的 traversal path 会被拒绝，解析后逃出已配置 static root 的符号链接也绝不会被服务。
+
 ## Public 文件
 
 ```text
@@ -59,6 +61,8 @@ frontend: {
 ## 增量上传
 
 `deploy-manifest.json` 加 sha256 state 让 Vext 跳过未变化的图片、字体、JS、CSS 和 public 文件。这是企业发布中避免大文件重复上传的默认路径。
+
+Deploy manifest 被视为不可信输入。每个 asset path 都必须规范化、保持相对且唯一，并在 lexical 与 realpath 两层都被前端输出目录包含。绝对/traversal 条目、逃逸的符号链接、重复 upload key 或 size/sha256 漂移，都会在传输任何资源前终止 plan 与 upload。
 
 ## 本地媒体流水线
 

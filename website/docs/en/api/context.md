@@ -19,6 +19,7 @@ This page details the complete API of VextJS's request object `VextRequest` and 
 | `body`        | `unknown`                               | Request body (populated by body-parser middleware)                                                                                                                          |
 | `headers`     | `Record<string, string \| undefined>`   | Request headers (all lowercase keys)                                                                                                                                        |
 | `app`         | `VextApp`                               | The application instance to which the current request belongs                                                                                                               |
+| `signal`      | `AbortSignal`                           | Aborts when the client connection closes or the route deadline expires; pass it to cancellable downstream work                                                              |
 | `requestId`   | `string`                                | Request unique identifier                                                                                                                                                   |
 | `ip`          | `string`                                | Client IP                                                                                                                                                                   |
 | `protocol`    | `'http' \| 'https'`                     | Request protocol                                                                                                                                                            |
@@ -188,6 +189,23 @@ Capabilities accessible via `req.app`:
 | `req.app.config`   | Runtime configuration     |
 | `req.app.services` | Injected service instance |
 | `req.app.fetch`    | Built-in HTTP client      |
+
+---
+
+### `signal`
+
+An `AbortSignal` bound to the request lifecycle. It is aborted when the client connection closes. When the route timeout middleware is active, its deadline signal is combined with the connection signal, so downstream work observes either cancellation source.
+
+Pass the signal to APIs that support cancellation and still stop mutating application or response state after it is aborted:
+
+```typescript
+app.get("/report", async (req, res) => {
+  const upstream = await fetch("https://example.com/report", {
+    signal: req.signal,
+  });
+  res.json(await upstream.json());
+});
+```
 
 ---
 

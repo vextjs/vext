@@ -191,9 +191,78 @@ export default defineRoutes((app) => {
       await readFile(join(projectRoot, ".vext/manifest/routes.json"), "utf-8"),
     );
     expect(manifestPayload.kind).toBe("routes-manifest");
+    expect(manifestPayload.sourceFingerprint).toMatch(/^[a-f0-9]{64}$/u);
+    expect(manifestPayload.sourceFiles).toEqual(["src/routes/users.ts"]);
     expect(manifestPayload.summary.inferredOperationIds).toBe(1);
     expect(manifestPayload.summary.explicitOperationIds).toBe(0);
     expect(manifestPayload.routes[0]?.operationId).toBe("getUsersById");
     expect(manifestPayload.routes[0]?.operationIdSource).toBe("inferred");
+  });
+
+  it("automatically rebuilds stale manifests and reserves stale reads for --manifest-only", async () => {
+    projectRoot = await mkdtemp(join(tmpdir(), "vext-doctor-fingerprint-"));
+    await writeProjectFile(
+      projectRoot,
+      "package.json",
+      JSON.stringify({ name: "doctor-fingerprint", type: "module" }, null, 2),
+    );
+    await writeProjectFile(
+      projectRoot,
+      "src/config/default.js",
+      "export default { port: 3000 };\n",
+    );
+    const routeSource = (
+      routePath: string,
+    ) => `import { defineRoutes } from "vextjs";
+export default defineRoutes((app) => {
+  app.get("${routePath}", { docs: { summary: "Probe" } }, handler);
+});
+`;
+    await writeProjectFile(
+      projectRoot,
+      "src/routes/index.ts",
+      routeSource("/before"),
+    );
+    await doctorCommand([
+      "routes",
+      "--root",
+      projectRoot,
+      "--json",
+      "--write-manifest",
+    ]);
+    const first = JSON.parse(String(consoleLog.mock.calls[0]?.[0] ?? "{}"));
+    expect(first.routes[0]?.path).toBe("/before");
+
+    consoleLog.mockClear();
+    await writeProjectFile(
+      projectRoot,
+      "src/routes/index.ts",
+      routeSource("/after"),
+    );
+    await doctorCommand(["routes", "--root", projectRoot, "--json"]);
+    const current = JSON.parse(String(consoleLog.mock.calls[0]?.[0] ?? "{}"));
+    expect(current.routes[0]?.path).toBe("/after");
+    expect(current.sourceFingerprint).not.toBe(first.sourceFingerprint);
+
+    consoleLog.mockClear();
+    await doctorCommand([
+      "routes",
+      "--root",
+      projectRoot,
+      "--json",
+      "--manifest-only",
+    ]);
+    const snapshot = JSON.parse(String(consoleLog.mock.calls[0]?.[0] ?? "{}"));
+    expect(snapshot.routes[0]?.path).toBe("/before");
+
+    await expect(
+      doctorCommand([
+        "routes",
+        "--root",
+        projectRoot,
+        "--refresh",
+        "--manifest-only",
+      ]),
+    ).rejects.toThrow(/mutually exclusive/u);
   });
 });

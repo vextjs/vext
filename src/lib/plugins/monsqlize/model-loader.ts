@@ -28,6 +28,15 @@ import type { MonSQLize } from "monsqlize";
 import type { VextPluginContext } from "../../../types/plugin.js";
 import type { MonSQLizeDatabaseConfig } from "./types.js";
 import { loadMonSQLizeModelClass } from "./module.js";
+import {
+  registerModelPlan,
+  validateModelRegistration,
+} from "./model-registry.js";
+import type {
+  ModelRegistrationHandle,
+  ModelRegistryClass,
+  PlannedModelRegistration,
+} from "./model-registry.js";
 
 /**
  * 获取 MonSQLize 的 Model 类（静态注册器）
@@ -38,12 +47,92 @@ import { loadMonSQLizeModelClass } from "./module.js";
  *
  * @returns Model 类（含 define / has / get 静态方法）
  */
-async function getModelClass(): Promise<{
-  define: (name: string, definition: any) => void;
-  redefine: (name: string, definition: any) => void;
-  has: (name: string) => boolean;
-}> {
-  return loadMonSQLizeModelClass();
+async function getModelClass(): Promise<ModelRegistryClass> {
+  const ModelClass = await loadMonSQLizeModelClass();
+  for (const method of [
+    "define",
+    "redefine",
+    "undefine",
+    "has",
+    "get",
+  ] as const) {
+    if (typeof ModelClass?.[method] !== "function") {
+      throw new Error(
+        `[monsqlize] installed Model registry does not provide ${method}()`,
+      );
+    }
+  }
+  return ModelClass as ModelRegistryClass;
+}
+
+type ModelValidationMode = "strict" | "lenient";
+
+interface DiscoveredRegistration extends PlannedModelRegistration {
+  kind: "shared" | "local";
+  role: "primary" | "alias";
+  modelId: string;
+}
+
+interface ModelDiscoveryResult {
+  registrations: DiscoveredRegistration[];
+  modelIds: Set<string>;
+}
+
+const EMPTY_MODEL_REGISTRATION: ModelRegistrationHandle = {
+  keys: [],
+  replaceSources(_sources, registrations) {
+    if (registrations.length > 0) {
+      throw new Error("[monsqlize] model auto-register is disabled");
+    }
+  },
+  release() {},
+};
+
+function modelSource(file: string): string {
+  return `local:${file.replaceAll("\\", "/")}`;
+}
+
+function reportModelIssue(
+  app: VextPluginContext,
+  mode: ModelValidationMode,
+  message: string,
+  cause?: unknown,
+): void {
+  if (mode === "strict") {
+    throw new Error(message, cause === undefined ? undefined : { cause });
+  }
+  app.logger.warn(message);
+}
+
+function addRegistrationGroup(
+  plan: Map<string, DiscoveredRegistration>,
+  registrations: readonly DiscoveredRegistration[],
+): void {
+  const groupKeys = new Set<string>();
+  for (const registration of registrations) {
+    validateModelRegistration(registration);
+    if (groupKeys.has(registration.key)) {
+      throw new Error(
+        `${registration.source} — primary and alias resolve to duplicate model key '${registration.key}'`,
+      );
+    }
+    groupKeys.add(registration.key);
+    const existing = plan.get(registration.key);
+    const replacesSharedPrimary =
+      registration.kind === "local" &&
+      registration.role === "primary" &&
+      existing?.kind === "shared" &&
+      existing.role === "primary";
+    if (existing && !replacesSharedPrimary) {
+      throw new Error(
+        `${registration.source} — model key '${registration.key}' conflicts with ${existing.source}`,
+      );
+    }
+  }
+
+  for (const registration of registrations) {
+    plan.set(registration.key, registration);
+  }
 }
 
 /**
@@ -63,26 +152,49 @@ export async function loadModels(
   modelsConfig: MonSQLizeDatabaseConfig["models"] | undefined,
   app: VextPluginContext,
   srcDir: string,
-): Promise<void> {
+): Promise<ModelRegistrationHandle> {
   const config = {
     dir: modelsConfig?.dir ?? "models",
     autoRegister: modelsConfig?.autoRegister ?? true,
     sharedPackage: modelsConfig?.sharedPackage,
+    validation: modelsConfig?.validation ?? "strict",
   };
+
+  if (config.validation !== "strict" && config.validation !== "lenient") {
+    throw new Error(
+      `[monsqlize] database.models.validation must be 'strict' or 'lenient'`,
+    );
+  }
 
   if (!config.autoRegister) {
     app.logger.debug("[monsqlize] model auto-register disabled");
-    return;
+    return EMPTY_MODEL_REGISTRATION;
   }
 
-  let modelCount = 0;
-  let sharedKeys = new Set<string>();
+  const plan = new Map<string, DiscoveredRegistration>();
+  const modelIds = new Set<string>();
 
   // ── 1. 加载共享 Model 包 ──────────────────────────────────
   if (config.sharedPackage) {
-    const shared = await loadSharedModels(monsqlize, config.sharedPackage, app);
-    modelCount += shared.count;
-    sharedKeys = shared.keys;
+    const shared = await discoverSharedModels(
+      monsqlize,
+      config.sharedPackage,
+      app,
+      config.validation,
+    );
+    for (const registration of shared.registrations) {
+      try {
+        addRegistrationGroup(plan, [registration]);
+      } catch (error) {
+        reportModelIssue(
+          app,
+          config.validation,
+          (error as Error).message,
+          error,
+        );
+      }
+    }
+    for (const modelId of shared.modelIds) modelIds.add(modelId);
   }
 
   // ── 2. 加载本地 models/ 目录 ──────────────────────────────
@@ -94,166 +206,125 @@ export async function loadModels(
         "[monsqlize] no models/ directory found — skipping model loading",
       );
     }
-    if (modelCount > 0) {
-      app.logger.info(
-        `[monsqlize] ${modelCount} model(s) loaded (shared only)`,
-      );
-    }
-    return;
+  } else {
+    const local = await discoverLocalModels(
+      monsqlize,
+      modelsDir,
+      app,
+      config.validation,
+      plan,
+    );
+    for (const modelId of local.modelIds) modelIds.add(modelId);
   }
 
-  modelCount += await loadLocalModels(monsqlize, modelsDir, app, sharedKeys);
-
-  if (modelCount > 0) {
-    app.logger.info(`[monsqlize] ${modelCount} model(s) loaded`);
+  modelIds.clear();
+  for (const registration of plan.values()) {
+    modelIds.add(registration.modelId);
   }
+
+  const ModelClass = await getModelClass();
+  const handle = registerModelPlan(ModelClass, app, [...plan.values()]);
+  if (modelIds.size > 0) {
+    const suffix = !existsSync(modelsDir) ? " (shared only)" : "";
+    app.logger.info(`[monsqlize] ${modelIds.size} model(s) loaded${suffix}`);
+  }
+  return handle;
 }
 
 /**
  * 加载共享 Model 包
  *
- * 支持两种导出格式：
+ * 共享包必须导出可静态追踪的定义对象：
  *   - export default { User: { ... }, Order: { ... } }
- *   - export function registerModels(monsqlize) { ... }
+ *
+ * 旧式 registerModels() 会自行改变进程级注册表，无法在调用前形成完整
+ * plan，也无法可靠归属到 app，因此在 2.0 中明确拒绝。
  *
  * @param monsqlize     MonSQLize 实例
  * @param packageName   共享包名（如 '@project/models'）
  * @param app           插件上下文
  * @returns 加载数量及本次共享对象导出拥有的注册键
  */
-async function loadSharedModels(
+async function discoverSharedModels(
   monsqlize: MonSQLize,
   packageName: string,
   app: VextPluginContext,
-): Promise<{ count: number; keys: Set<string> }> {
-  let count = 0;
-  const keys = new Set<string>();
-
+  mode: ModelValidationMode,
+): Promise<ModelDiscoveryResult> {
+  const registrations: DiscoveredRegistration[] = [];
+  const modelIds = new Set<string>();
+  let sharedModels: Record<string, unknown>;
   try {
-    const sharedModels = await import(packageName);
-
-    if (
-      sharedModels.default &&
-      typeof sharedModels.default === "object" &&
-      !Array.isArray(sharedModels.default)
-    ) {
-      // 格式 1：export default { User: { ... }, Order: { ... } }
-      const ModelClass = await getModelClass();
-      const definitions = Object.entries(sharedModels.default).flatMap(
-        ([name, definition]) => {
-          if (!definition || typeof definition !== "object") return [];
-          const collectionName =
-            ((definition as Record<string, unknown>).collection as
-              | string
-              | undefined) ??
-            ((definition as Record<string, unknown>).name as
-              | string
-              | undefined) ??
-            name;
-          return [{ collectionName, definition }];
-        },
-      );
-      for (const { collectionName } of definitions) {
-        if (keys.has(collectionName) || ModelClass.has(collectionName)) {
-          throw new Error(
-            `[monsqlize] shared model key '${collectionName}' is already registered`,
-          );
-        }
-        keys.add(collectionName);
-      }
-      for (const { collectionName, definition } of definitions) {
-        ModelClass.define(collectionName, definition as any);
-        count++;
-        app.logger.debug(
-          `[monsqlize] model loaded from shared: ${collectionName}`,
-        );
-      }
-    } else if (
-      sharedModels.registerModels &&
-      typeof sharedModels.registerModels === "function"
-    ) {
-      // 格式 2：export function registerModels(monsqlize) { ... }
-      await sharedModels.registerModels(monsqlize);
-      app.logger.debug("[monsqlize] models loaded via registerModels()");
-      // registerModels 内部注册，无法精确计数，标记为 1
-      count++;
-    } else {
-      app.logger.warn(
-        `[monsqlize] shared package "${packageName}" has no valid export ` +
-          "(expected default object or registerModels function)",
-      );
-    }
-
-    app.logger.info(`[monsqlize] shared models loaded from "${packageName}"`);
+    sharedModels = (await import(packageName)) as Record<string, unknown>;
   } catch (err) {
-    throw new Error(
+    reportModelIssue(
+      app,
+      mode,
       `[monsqlize] Failed to load shared model package "${packageName}":\n` +
         `  ${(err as Error).message}\n` +
         `  Make sure the package is installed: npm install ${packageName}`,
+      err,
     );
+    return { registrations, modelIds };
   }
 
-  return { count, keys };
-}
-
-interface ModelRegistryClass {
-  define: (name: string, definition: any) => void;
-  redefine: (name: string, definition: any) => void;
-  has: (name: string) => boolean;
-}
-
-export interface LocalModelRegistrationState {
-  sharedKeys: Set<string>;
-  localKeys: Set<string>;
-}
-
-export function registerLocalModelEntry(
-  ModelClass: ModelRegistryClass,
-  entry: { registryKey: string; finalDef: Record<string, unknown> },
-  aliasKey: string | undefined,
-  file: string,
-  state: LocalModelRegistrationState,
-): "defined" | "redefined" {
-  const { registryKey, finalDef } = entry;
-  if (state.localKeys.has(registryKey)) {
-    throw new Error(
-      `[monsqlize] models/${file} — duplicate local model key '${registryKey}'`,
-    );
-  }
-
-  const primaryExists = ModelClass.has(registryKey);
-  if (primaryExists && !state.sharedKeys.has(registryKey)) {
-    throw new Error(
-      `[monsqlize] models/${file} — model key '${registryKey}' is already registered outside the configured shared model object`,
-    );
-  }
-
+  const defaultExport = sharedModels.default;
   if (
-    aliasKey &&
-    aliasKey !== registryKey &&
-    (state.localKeys.has(aliasKey) ||
-      state.sharedKeys.has(aliasKey) ||
-      ModelClass.has(aliasKey))
+    defaultExport &&
+    typeof defaultExport === "object" &&
+    !Array.isArray(defaultExport)
   ) {
-    throw new Error(
-      `[monsqlize] models/${file} — model alias key '${aliasKey}' is already registered`,
+    for (const [name, definition] of Object.entries(defaultExport)) {
+      const source = `[monsqlize] shared package "${packageName}" export '${name}'`;
+      try {
+        if (
+          !definition ||
+          typeof definition !== "object" ||
+          Array.isArray(definition)
+        ) {
+          throw new Error(`${source} — model definition must be an object`);
+        }
+        const modelDefinition = definition as Record<string, unknown>;
+        const collectionName =
+          (modelDefinition.collection as string | undefined) ??
+          (modelDefinition.name as string | undefined) ??
+          name;
+        const registration: DiscoveredRegistration = {
+          key: collectionName,
+          definition: modelDefinition,
+          source: `shared:${packageName}:${name}`,
+          kind: "shared",
+          role: "primary",
+          modelId: `shared:${packageName}:${name}`,
+        };
+        validateModelRegistration(registration);
+        registrations.push(registration);
+        modelIds.add(registration.modelId);
+      } catch (error) {
+        reportModelIssue(app, mode, (error as Error).message, error);
+      }
+    }
+  } else if (typeof sharedModels.registerModels === "function") {
+    reportModelIssue(
+      app,
+      mode,
+      `[monsqlize] shared package "${packageName}" uses unsupported registerModels(); export a default model-definition object so VextJS can preflight, own, and roll back every key`,
+    );
+  } else {
+    reportModelIssue(
+      app,
+      mode,
+      `[monsqlize] shared package "${packageName}" has no valid default model-definition object`,
     );
   }
 
-  const action = primaryExists ? "redefined" : "defined";
-  if (primaryExists) {
-    ModelClass.redefine(registryKey, finalDef as any);
-  } else {
-    ModelClass.define(registryKey, finalDef as any);
+  if (registrations.length > 0) {
+    app.logger.info(
+      `[monsqlize] shared models discovered from "${packageName}"`,
+    );
   }
-  state.localKeys.add(registryKey);
-
-  if (aliasKey && aliasKey !== registryKey) {
-    ModelClass.define(aliasKey, finalDef as any);
-    state.localKeys.add(aliasKey);
-  }
-
-  return action;
+  void monsqlize;
+  return { registrations, modelIds };
 }
 
 /**
@@ -267,13 +338,15 @@ export function registerLocalModelEntry(
  * @param app        插件上下文
  * @returns 加载的 Model 数量
  */
-async function loadLocalModels(
+async function discoverLocalModels(
   monsqlize: MonSQLize,
   modelsDir: string,
   app: VextPluginContext,
-  sharedKeys: Set<string>,
-): Promise<number> {
-  let count = 0;
+  mode: ModelValidationMode,
+  plan: Map<string, DiscoveredRegistration>,
+): Promise<ModelDiscoveryResult> {
+  const registrations: DiscoveredRegistration[] = [];
+  const modelIds = new Set<string>();
 
   // 使用 fast-glob 扫描（vext 已有此依赖）
   const { default: fg } = await import("fast-glob");
@@ -286,12 +359,6 @@ async function loadLocalModels(
       "**/*.spec.{ts,js,mjs,cjs}",
     ],
   });
-  const ModelClass = await getModelClass();
-  const registrationState: LocalModelRegistrationState = {
-    sharedKeys,
-    localKeys: new Set<string>(),
-  };
-
   // 按字母序排列，确保加载顺序可预测
   for (const file of files.sort()) {
     const filePath = join(modelsDir, file);
@@ -300,8 +367,11 @@ async function loadLocalModels(
     try {
       mod = await importModelFile(filePath);
     } catch (err) {
-      app.logger.warn(
+      reportModelIssue(
+        app,
+        mode,
         `[monsqlize] models/${file} — failed to import: ${(err as Error).message}`,
+        err,
       );
       continue;
     }
@@ -326,8 +396,10 @@ async function loadLocalModels(
       typeof definition !== "object" ||
       Array.isArray(definition)
     ) {
-      app.logger.warn(
-        `[monsqlize] models/${file} — invalid export (expected default object), skipped`,
+      reportModelIssue(
+        app,
+        mode,
+        `[monsqlize] models/${file} — invalid export (expected default object)`,
       );
       continue;
     }
@@ -339,33 +411,58 @@ async function loadLocalModels(
     const entry = resolveModelEntry(file, def);
     if (!entry) {
       const depthCount = file.replace(/\.\w+$/, "").split(/[/\\]/).length - 1;
-      app.logger.warn(
-        `[monsqlize] models/${file} — directory depth ${depthCount} exceeds maximum (2), skipped`,
+      reportModelIssue(
+        app,
+        mode,
+        `[monsqlize] models/${file} — directory depth ${depthCount} exceeds maximum (2)`,
       );
       continue;
     }
     const { registryKey, finalDef } = entry;
-    const aliasKey = def.key as string | undefined;
-    const action = registerLocalModelEntry(
-      ModelClass,
-      { registryKey, finalDef },
-      aliasKey,
-      file,
-      registrationState,
-    );
-    count++;
-    app.logger.debug(
-      `[monsqlize] model ${action}: ${registryKey} (from ${file})`,
-    );
+    const aliasValue = def.key;
+    const aliasKey = aliasValue === undefined ? undefined : aliasValue;
+    const source = modelSource(file);
+    const modelId = source;
+    const group: DiscoveredRegistration[] = [
+      {
+        key: registryKey,
+        definition: finalDef,
+        source,
+        kind: "local",
+        role: "primary",
+        modelId,
+      },
+    ];
+    if (aliasKey !== undefined && aliasKey !== registryKey) {
+      group.push({
+        key: aliasKey as string,
+        definition: finalDef,
+        source,
+        kind: "local",
+        role: "alias",
+        modelId,
+      });
+    }
 
-    if (aliasKey && aliasKey !== registryKey) {
+    try {
+      addRegistrationGroup(plan, group);
+      registrations.push(...group);
+      modelIds.add(modelId);
       app.logger.debug(
-        `[monsqlize] model alias '${aliasKey}' registered (from ${file})`,
+        `[monsqlize] model planned: ${registryKey} (from ${file})`,
       );
+      if (aliasKey !== undefined && aliasKey !== registryKey) {
+        app.logger.debug(
+          `[monsqlize] model alias '${String(aliasKey)}' planned (from ${file})`,
+        );
+      }
+    } catch (error) {
+      reportModelIssue(app, mode, (error as Error).message, error);
     }
   }
 
-  return count;
+  void monsqlize;
+  return { registrations, modelIds };
 }
 
 /**

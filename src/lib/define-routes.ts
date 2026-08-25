@@ -3,10 +3,19 @@ import type { VextMiddleware, VextHandler } from "../types/middleware.js";
 import type { VextAdapter } from "../types/adapter.js";
 import type { RouteDefinition, RouteFactory } from "../types/route.js";
 import { prepareRouteResponseSerializers } from "./response-serializer.js";
+import {
+  assertCanonicalRouteFactorySource,
+  normalizeRegisteredRoutePath,
+  VEXT_ROUTE_METHODS,
+} from "./route-contract.js";
 
 const ROUTE_INTERNALS_SYMBOL = Symbol.for("vext.routeDefinition.internals");
 
 const ASYNC_FUNCTION_PROTOTYPE = Object.getPrototypeOf(async function () {});
+const GENERATOR_FUNCTION_PROTOTYPE = Object.getPrototypeOf(function* () {});
+const ASYNC_GENERATOR_FUNCTION_PROTOTYPE = Object.getPrototypeOf(
+  async function* () {},
+);
 
 interface RouteDefinitionInternals {
   factory: RouteFactory;
@@ -26,8 +35,8 @@ const routeDefinitionInternals = new WeakMap<
  * 后续由 router-loader 调用 routeDef.register() 统一注册到底层适配器。
  *
  * 设计说明：
- *   - factory 接收真实 VextApp，保证 handler 闭包中的 app 与 req.app 身份一致
- *   - 执行 factory 时临时把 app.get/post/... 指向 collector，将调用推入 routes 数组
+ *   - factory 接收以真实 VextApp 为能力来源的可关闭 facade
+ *   - facade 的 app.get/post/... 指向 collector，真实 app 方法保持不变
  *   - 返回 RouteDefinition { routes, sourceFile, register }
  *   - register() 负责拼接前缀、组装中间件链、注册到 adapter
  *
@@ -71,6 +80,14 @@ export function defineRoutes<TFactory extends RouteFactory>(
     throw new Error("[vextjs] defineRoutes(factory) expects a function.");
   }
   assertSynchronousRouteFactory(factory);
+  assertCanonicalRouteFactorySource(
+    Function.prototype.toString.call(factory),
+    "defineRoutes(factory)",
+    {
+      validateHandler: false,
+      allowCompilerLoweredSequence: true,
+    },
+  );
 
   const routes: RouteRecord[] = [];
 
@@ -112,10 +129,10 @@ export function defineRoutes<TFactory extends RouteFactory>(
     };
   }
 
-  // ── 创建 collector（临时替换 VextApp 的 HTTP 方法）──────
+  // ── 创建 collector ───────────────────────────────────────
   // collector 只负责把 app.get/post/... 调用收集到 routes 数组。
-  // executeRouteFactory 会让 factory 接收真实 app，并仅在收集期间
-  // 临时把真实 app 的 HTTP 方法指向这些 collector 方法。
+  // executeRouteFactory 会为每次执行创建可关闭的 app facade，真实 app 的
+  // HTTP 方法不会被替换。
   const collector = {
     get: createMethodCollector("get"),
     post: createMethodCollector("post"),
@@ -159,7 +176,7 @@ export function defineRoutes<TFactory extends RouteFactory>(
     ): void {
       for (const route of routes) {
         // ── 1. 拼接完整路径 ──────────────────────────────
-        const fullPath = normalizePath(prefix, route.path);
+        const fullPath = normalizeRegisteredRoutePath(prefix, route.path);
         prepareRouteResponseSerializers(route.options, {
           method: route.method,
           path: fullPath,
@@ -232,11 +249,8 @@ export function defineRoutes<TFactory extends RouteFactory>(
 /**
  * 执行路由收集（由 router-loader 调用）
  *
- * 在真实 app 上临时挂载 HTTP 方法 collector，然后执行 factory 回调。
- * 执行后 routeDefinition.routes 就包含了所有收集到的路由记录。
- *
- * factory 接收到的 app 与请求期 req.app 是同一对象；收集完成后会恢复 app 原有
- * HTTP 方法，避免污染运行期 app 形状。
+ * 使用一个以真实 app 为能力来源、以 collector 为 HTTP 注册面的可关闭 facade
+ * 执行 factory。执行后 routeDefinition.routes 就包含了所有同步收集到的路由记录。
  *
  * @param routeDefinition defineRoutes 返回的路由定义对象
  * @param app             真正的 VextApp 实例
@@ -260,36 +274,53 @@ export function executeRouteFactory(
   routeDefinition.routes.length = 0;
 
   const collector = internals.collector;
-
-  // 临时把真实 app 的 HTTP 方法替换为 collector 方法，让 factory 闭包仍捕获
-  // 真实 app，同时把注册调用收集到 routeDefinition.routes。
-  const httpMethods = [
-    "get",
-    "post",
-    "put",
-    "patch",
-    "delete",
-    "head",
-    "options",
-  ] as const;
-  const appRecord = app as unknown as Record<string, unknown>;
-  const originals = new Map<
-    (typeof httpMethods)[number],
-    { hadOwn: boolean; value: unknown }
-  >();
-
-  for (const method of httpMethods) {
-    originals.set(method, {
-      hadOwn: Object.prototype.hasOwnProperty.call(appRecord, method),
-      value: appRecord[method],
-    });
-    appRecord[method] = collector[method];
-  }
+  const httpMethods = VEXT_ROUTE_METHODS;
+  const methodSet = new Set<PropertyKey>(httpMethods);
+  let collecting = true;
+  const registrar = Object.fromEntries(
+    httpMethods.map((method) => [
+      method,
+      (...args: unknown[]) => {
+        if (!collecting) {
+          throw new Error(
+            `[vextjs] Route factory registrar is closed; app.${method}() must be called synchronously inside defineRoutes(factory).`,
+          );
+        }
+        return Reflect.apply(
+          collector[method] as (...input: unknown[]) => unknown,
+          collector,
+          args,
+        );
+      },
+    ]),
+  ) as Record<(typeof httpMethods)[number], (...args: unknown[]) => unknown>;
+  const boundCapabilities = new Map<PropertyKey, unknown>();
+  const factoryApp = new Proxy(app, {
+    get(target, property) {
+      if (methodSet.has(property)) {
+        return registrar[property as (typeof httpMethods)[number]];
+      }
+      const value = Reflect.get(target, property, target);
+      if (typeof value !== "function") return value;
+      if (!boundCapabilities.has(property)) {
+        boundCapabilities.set(property, value.bind(target));
+      }
+      return boundCapabilities.get(property);
+    },
+  });
 
   try {
-    const result = (internals.factory as (factoryApp: VextApp) => unknown)(app);
+    const result = (internals.factory as (factoryApp: VextApp) => unknown)(
+      factoryApp,
+    );
     if (isPromiseLike(result)) {
+      void Promise.resolve(result).catch(() => undefined);
       throw synchronousFactoryError();
+    }
+    if (result !== undefined) {
+      throw new Error(
+        "[vextjs] defineRoutes(factory) must return undefined after synchronous route registration.",
+      );
     }
   } catch (error) {
     // Route collection is transactional: a failed factory must not leave a
@@ -297,16 +328,7 @@ export function executeRouteFactory(
     routeDefinition.routes.length = 0;
     throw error;
   } finally {
-    for (const method of httpMethods) {
-      const original = originals.get(method);
-      if (!original) continue;
-
-      if (original.hadOwn) {
-        appRecord[method] = original.value;
-      } else {
-        delete appRecord[method];
-      }
-    }
+    collecting = false;
   }
 
   // 保留内部 factory/collector：允许重复调用 executeRouteFactory
@@ -314,7 +336,12 @@ export function executeRouteFactory(
 }
 
 function assertSynchronousRouteFactory(factory: RouteFactory): void {
-  if (Object.getPrototypeOf(factory) === ASYNC_FUNCTION_PROTOTYPE) {
+  const prototype = Object.getPrototypeOf(factory);
+  if (
+    prototype === ASYNC_FUNCTION_PROTOTYPE ||
+    prototype === GENERATOR_FUNCTION_PROTOTYPE ||
+    prototype === ASYNC_GENERATOR_FUNCTION_PROTOTYPE
+  ) {
     throw synchronousFactoryError();
   }
 }
@@ -411,52 +438,4 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   if (!isRecord(value) || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
-}
-
-/**
- * 规范化路由路径
- *
- * 将前缀和子路径拼接为完整路径，处理边界情况：
- *   - 去除重复的 /
- *   - 确保路径以 / 开头
- *   - 去除尾部 /（根路径 / 除外）
- *
- * @param prefix  文件路径推导出的路由前缀（如 /api/users）
- * @param subPath 文件内注册的子路径（如 /list、/:id、/）
- * @returns 规范化后的完整路径
- *
- * @example
- * normalizePath('/users', '/list')   → '/users/list'
- * normalizePath('/users', '/')       → '/users'
- * normalizePath('/users', '/:id')    → '/users/:id'
- * normalizePath('/', '/')            → '/'
- * normalizePath('/api/users', '')    → '/api/users'
- */
-function normalizePath(prefix: string, subPath: string): string {
-  // 去除前缀尾部 /（根路径 '/' 除外）
-  const cleanPrefix =
-    prefix.endsWith("/") && prefix.length > 1 ? prefix.slice(0, -1) : prefix;
-
-  // 去除子路径的前导 /（避免拼接后出现 //）
-  const cleanSubPath = subPath.startsWith("/") ? subPath.slice(1) : subPath;
-
-  // 拼接
-  if (!cleanSubPath) {
-    // 子路径为空或 '/'，直接使用前缀
-    return cleanPrefix || "/";
-  }
-
-  // 当 prefix 是根路径 '/' 时，直接拼接为 '/' + subPath，避免 '//health'
-  if (cleanPrefix === "/") {
-    return `/${cleanSubPath}`;
-  }
-
-  const fullPath = `${cleanPrefix}/${cleanSubPath}`;
-
-  // 去除尾部 /（根路径除外）
-  if (fullPath.length > 1 && fullPath.endsWith("/")) {
-    return fullPath.slice(0, -1);
-  }
-
-  return fullPath;
 }

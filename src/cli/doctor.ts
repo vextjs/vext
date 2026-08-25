@@ -8,6 +8,7 @@ interface DoctorOptions {
   writeInspect: boolean;
   writeManifest: boolean;
   refresh: boolean;
+  manifestOnly: boolean;
   help: boolean;
 }
 
@@ -27,6 +28,7 @@ export async function doctorCommand(args: string[] = []): Promise<void> {
     writeInspect: options.writeInspect,
     writeManifest: options.writeManifest,
     refresh: options.refresh,
+    manifestOnly: options.manifestOnly,
   });
 
   if (options.json) {
@@ -78,6 +80,7 @@ function parseDoctorArgs(args: string[]): DoctorOptions {
     writeInspect: false,
     writeManifest: false,
     refresh: false,
+    manifestOnly: false,
     help: false,
   };
 
@@ -100,6 +103,8 @@ function parseDoctorArgs(args: string[]): DoctorOptions {
       options.writeManifest = true;
     } else if (arg === "--refresh") {
       options.refresh = true;
+    } else if (arg === "--manifest-only") {
+      options.manifestOnly = true;
     } else if (arg === "--help" || arg === "-h") {
       options.help = true;
     } else if (arg.startsWith("--")) {
@@ -107,6 +112,12 @@ function parseDoctorArgs(args: string[]): DoctorOptions {
     } else {
       throw new Error(`[vextjs] Unknown doctor target: "${arg}"`);
     }
+  }
+
+  if (options.refresh && options.manifestOnly) {
+    throw new Error(
+      '[vextjs] Options "--refresh" and "--manifest-only" are mutually exclusive.',
+    );
   }
 
   return options;
@@ -127,7 +138,8 @@ function printDoctorHelp(): void {
     --json              Print machine-readable JSON output
     --write-inspect     Write .vext/inspect/routes.json for downstream tooling
     --write-manifest    Write .vext/manifest/routes.json for stable tooling consumers
-    --refresh           Rebuild route diagnostics instead of reading the cached manifest
+    --refresh           Force rebuilding route diagnostics from current route sources
+    --manifest-only     Read the stored manifest as an explicit snapshot, even when stale
     --root <path>       Project root directory (default: current working directory)
     -C <path>           Alias of --root
     -h, --help          Show this help message

@@ -4,7 +4,7 @@ This example shows how to connect [permission-core](https://devcodex-labs.github
 
 - `auth()` parses the Bearer token and fills `req.auth`.
 - `permission-core` owns authorization decisions such as `invoke + GET:/api/posts`.
-- A small route helper maps business permissions to `RouteOptions.auth` so each route does not repeat the auth middleware and resource strings.
+- Each route keeps its final `RouteOptions.auth` inline or in a same-file `const`, so build indexing, runtime guards, and OpenAPI read the same contract.
 
 ## 1. Install
 
@@ -128,86 +128,51 @@ export default {
 };
 ```
 
-## 4. Centralize route guard helpers
+## 4. Declare statically projectable route guards
 
-Do not repeat `middlewares: ["permission-core-auth"]` and raw resource strings in every route. Keep the bridge middleware registered once, then put the route guard shape in a small policy helper:
-
-```typescript
-// src/auth/permission-policies.ts
-import type { RouteDocsConfig, RouteOptions } from "vextjs";
-
-const postPermissionResources = {
-  read: "GET:/api/posts",
-  create: "POST:/api/posts",
-  delete: "DELETE:/api/posts",
-} as const;
-
-type PostPermission = keyof typeof postPermissionResources;
-
-export function permissionCoreAuth(docs: RouteDocsConfig): RouteOptions {
-  return {
-    middlewares: ["permission-core-auth"],
-    auth: { required: true, security: "bearerAuth" },
-    docs,
-  };
-}
-
-export function requirePostPermission(
-  permission: PostPermission,
-  docs: RouteDocsConfig,
-): RouteOptions {
-  return {
-    middlewares: ["permission-core-auth"],
-    auth: {
-      permissions: [
-        {
-          action: "invoke",
-          resource: postPermissionResources[permission],
-          context: (req) => ({ route: req.route }),
-        },
-      ],
-      security: "bearerAuth",
-    },
-    docs,
-  };
-}
-```
-
-This keeps the policy vocabulary in one place. If your project has multiple resource families, create helpers such as `requireUserPermission()` and `requireBillingPermission()` instead of copying raw permission tuples across handlers.
-
-## 5. Protect routes with the policy helper
+The route index does not execute imported or local helper functions. Keep each final guard shape in the route file as a same-file `const`; this makes the complete middleware, permission, security, and docs contract visible before runtime:
 
 ```typescript
 // src/routes/posts.ts
 import { defineRoutes } from "vextjs";
-import { requirePostPermission } from "../auth/permission-policies";
+import type { RouteOptions } from "vextjs";
 
+const listPostsOptions = {
+  middlewares: ["permission-core-auth"],
+  auth: {
+    permissions: [{ action: "invoke", resource: "GET:/api/posts" }],
+    security: "bearerAuth",
+  },
+  docs: { summary: "List posts", tags: ["Posts"] },
+} satisfies RouteOptions;
+
+const createPostOptions = {
+  middlewares: ["permission-core-auth"],
+  auth: {
+    permissions: [{ action: "invoke", resource: "POST:/api/posts" }],
+    security: "bearerAuth",
+  },
+  docs: { summary: "Create post", tags: ["Posts"] },
+} satisfies RouteOptions;
+```
+
+Keep related route constants together in their route module. Shared runtime behavior remains centralized in the `permission-core-auth` middleware and permission provider; the route contract itself stays statically visible.
+
+## 5. Protect routes with the final option constants
+
+```typescript
 export default defineRoutes((app) => {
-  app.get(
-    "/posts",
-    requirePostPermission("read", {
-      summary: "List posts",
-      tags: ["Posts"],
-    }),
-    async (req, res) => {
-      res.json({ ok: true, userId: req.auth.userId });
-    },
-  );
+  app.get("/posts", listPostsOptions, async (req, res) => {
+    res.json({ ok: true, userId: req.auth.userId });
+  });
 
-  app.post(
-    "/posts",
-    requirePostPermission("create", {
-      summary: "Create post",
-      tags: ["Posts"],
-    }),
-    async (req, res) => {
-      res.json({ ok: true, userId: req.auth.userId }, 201);
-    },
-  );
+  app.post("/posts", createPostOptions, async (req, res) => {
+    res.json({ ok: true, userId: req.auth.userId }, 201);
+  });
 });
 ```
 
-`RouteOptions.auth` remains the guard contract, but most applications should route through local helpers so middleware names, security schemes, and permission resources do not drift. The older `openapi.guardSecurityMap` fallback still exists for legacy middleware-only routes, but new code should put security on `auth.security` inside the helper so runtime protection and OpenAPI output share the same source.
+`RouteOptions.auth` remains the guard contract. Route-options helper calls are rejected by the finite static grammar; use an inline final object or a same-file final `const`. The older `openapi.guardSecurityMap` fallback still exists only for legacy middleware-only routes.
 
 ## 6. Direct `assert()` in handlers
 
