@@ -37,6 +37,16 @@ function requireTokens(label, content, tokens) {
   }
 }
 
+function requireOrderedTokens(label, content, tokens) {
+  let previous = -1;
+  for (const token of tokens) {
+    const current = content.indexOf(token, previous + 1);
+    if (current === -1) fail(`${label} is missing ${token}`);
+    if (current <= previous) fail(`${label} has ${token} out of order`);
+    previous = current;
+  }
+}
+
 requireTokens("lint-typecheck", jobBlock("lint-typecheck"), [
   "fetch-depth: 0",
   "npm run lint",
@@ -48,9 +58,20 @@ requireTokens("lint-typecheck", jobBlock("lint-typecheck"), [
 ]);
 
 requireTokens("docs-build", jobBlock("docs-build"), [
+  "package-lock.json",
+  "website/package-lock.json",
+  "Install package dependencies",
+  "Build package for executable CLI contract",
   "verify-documentation-contract.mjs",
   "npm run build",
   "verify-documentation-contract.mjs --rendered",
+]);
+requireOrderedTokens("docs-build", jobBlock("docs-build"), [
+  "Install package dependencies",
+  "Build package for executable CLI contract",
+  "Verify documentation source contract",
+  "Build docs (rspress build)",
+  "Verify rendered documentation contract",
 ]);
 
 requireTokens("package-contracts", jobBlock("package-contracts"), [

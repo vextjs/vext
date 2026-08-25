@@ -249,7 +249,15 @@ jobs:
         with:
           node-version: 22
           cache: "npm"
-          cache-dependency-path: website/package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            website/package-lock.json
+
+      - name: Install package dependencies
+        run: npm ci
+
+      - name: Build package for executable CLI contract
+        run: npm run build
 
       - name: Install website dependencies
         working-directory: website
