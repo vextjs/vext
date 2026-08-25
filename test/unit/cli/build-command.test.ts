@@ -1,9 +1,12 @@
+import { parse } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
   const order: string[] = [];
+  const rootDir = process.cwd().replaceAll("\\", "/");
   return {
     order,
+    rootDir,
     existsSync: vi.fn(() => false),
     rmSync: vi.fn(),
     runLocalTsc: vi.fn(async () => {
@@ -11,8 +14,8 @@ const mocks = vi.hoisted(() => {
       return { exitCode: 0, output: "" };
     }),
     detectProject: vi.fn(() => ({
-      rootDir: "E:/app",
-      srcDir: "E:/app/src",
+      rootDir,
+      srcDir: `${rootDir}/src`,
       language: "ts",
     })),
     runTypegen: vi.fn(async () => {
@@ -37,7 +40,7 @@ const mocks = vi.hoisted(() => {
         fileCount: 1,
         totalFiles: 1,
         elapsed: 1,
-        outDir: "E:/app/dist",
+        outDir: `${rootDir}/dist`,
         warnings: [],
         errors: [],
       };
@@ -57,16 +60,16 @@ const mocks = vi.hoisted(() => {
         config: {
           enabled: false,
           framework: "react",
-          root: "E:/app/src/frontend",
-          entry: "E:/app/.vext/generated/frontend/browser-entry.tsx",
-          indexHtml: "E:/app/src/frontend/pages/_document.html",
-          outDir: "E:/app/dist/client",
-          publicDir: "E:/app/public",
+          root: `${rootDir}/src/frontend`,
+          entry: `${rootDir}/.vext/generated/frontend/browser-entry.tsx`,
+          indexHtml: `${rootDir}/src/frontend/pages/_document.html`,
+          outDir: `${rootDir}/dist/client`,
+          publicDir: `${rootDir}/public`,
           publicPath: "/",
           apiClient: {
             enabled: true,
-            outFile: "E:/app/.vext/client/api.generated.ts",
-            contractFile: "E:/app/.vext/client/client-contract.json",
+            outFile: `${rootDir}/.vext/client/api.generated.ts`,
+            contractFile: `${rootDir}/.vext/client/client-contract.json`,
           },
           spaFallback: true,
           build: {
@@ -149,25 +152,25 @@ describe("buildCommand", () => {
       "frontend",
     ]);
     expect(mocks.runTypegen).toHaveBeenCalledWith({
-      rootDir: "E:/app",
+      rootDir: mocks.rootDir,
       generateServices: true,
       generateAppExtensions: true,
       writeManifest: true,
     });
     expect(mocks.runDoctor).toHaveBeenCalledWith({
-      rootDir: "E:/app",
+      rootDir: mocks.rootDir,
       target: "routes",
       writeManifest: true,
       refresh: true,
     });
-    expect(mocks.runLocalTsc).toHaveBeenCalledWith("E:/app", {
+    expect(mocks.runLocalTsc).toHaveBeenCalledWith(mocks.rootDir, {
       pretty: false,
       stdio: "inherit",
     });
     expect(mocks.loadConfig).toHaveBeenCalledWith(
       expect.stringMatching(/[\\/]dist[\\/]config$/),
       {
-        rootDir: "E:/app",
+        rootDir: mocks.rootDir,
         command: "build",
         mode: "production",
         configProfile: "production",
@@ -175,7 +178,7 @@ describe("buildCommand", () => {
       },
     );
     expect(mocks.buildFrontendClient).toHaveBeenCalledWith({
-      rootDir: "E:/app",
+      rootDir: mocks.rootDir,
       config: {
         enabled: false,
       },
@@ -200,7 +203,7 @@ describe("buildCommand", () => {
     expect(mocks.loadConfig).toHaveBeenCalledWith(
       expect.stringMatching(/[\\/]build[\\/]config$/),
       {
-        rootDir: "E:/app",
+        rootDir: mocks.rootDir,
         command: "build",
         mode: "production",
         configProfile: "production",
@@ -208,7 +211,7 @@ describe("buildCommand", () => {
       },
     );
     expect(mocks.buildFrontendClient).toHaveBeenCalledWith({
-      rootDir: "E:/app",
+      rootDir: mocks.rootDir,
       config: expect.objectContaining({
         enabled: true,
         entry: "src/frontend/custom-entry.tsx",
@@ -219,7 +222,7 @@ describe("buildCommand", () => {
     expect(consoleErrorSpy).not.toHaveBeenCalled();
   });
 
-  it.each([".", "src", "..", "../..", "E:/"])(
+  it.each([".", "src", "..", "../..", parse(mocks.rootDir).root])(
     "rejects destructive build outdir %s before cleanup",
     async (outdir) => {
       mocks.existsSync.mockReturnValue(true);
