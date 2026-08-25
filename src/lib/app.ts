@@ -86,10 +86,11 @@ export interface AppInternals {
    * 优雅关闭
    *
    * 流程：
-   *   1. 停止接受新请求（serverHandle.close()）
-   *   2. 等待飞行中请求完成（config.shutdown.timeout 超时保护）
-   *   3. 按 LIFO 顺序执行所有 onClose 钩子
-   *   4. process.exit(0)（测试模式 或 skipExit 时跳过）
+   *   1. 从 shutdown 开始建立单一绝对 deadline
+   *   2. 停止接受新请求并等待飞行中请求完成
+   *   3. 按 LIFO 顺序执行 onClose、缓存、生命周期与日志清理
+   *   4. deadline 到期后仍调用剩余清理，但不再无限等待
+   *   5. process.exit(0)（测试模式 或 skipExit 时跳过）
    *
    * @param serverHandle VextServerHandle（可选，由 bootstrap 传入）
    * @param options.skipExit 为 true 时跳过 process.exit()，仅执行资源清理。
@@ -530,37 +531,67 @@ export function createApp(config: VextConfig): {
       if (_shutdownPromise) return _shutdownPromise;
       _closeState = "running";
       const shutdownPromise = (async () => {
-        app.logger.info("[vextjs] starting graceful shutdown...");
-        await hooks.emitSafe("app:close", {
-          app,
-          phase: "before",
-          mode: lifecycleMode,
-          source: lifecycleSource,
-        });
-
         const shutdownTimeout = (config.shutdown?.timeout ?? 10) * 1000;
+        const deadline = createShutdownDeadline(shutdownTimeout, app.logger);
+        app.logger.info("[vextjs] starting graceful shutdown...");
         let shutdownError: unknown = null;
+
+        const beforeResult = await deadline.run(
+          "app:close before",
+          () =>
+            hooks.emitSafe("app:close", {
+              app,
+              phase: "before",
+              mode: lifecycleMode,
+              source: lifecycleSource,
+            }),
+          (error) => {
+            app.logger.error(
+              { error: shutdownErrorMessage(error) },
+              "[vextjs] app:close before failed after shutdown deadline",
+            );
+          },
+        );
+        if (beforeResult.status === "failed") {
+          app.logger.error(
+            { error: shutdownErrorMessage(beforeResult.error) },
+            "[vextjs] app:close before failed",
+          );
+        }
 
         // ── 步骤 1：停止接受新请求 + 等待飞行中请求完成 ──
         if (serverHandle) {
-          try {
-            await closeServerWithTimeout(
-              serverHandle,
-              shutdownTimeout,
-              app.logger,
+          const serverResult = await deadline.run(
+            "server close",
+            () => serverHandle.close(),
+            (error) => {
+              app.logger.error(
+                { error: shutdownErrorMessage(error) },
+                "[vextjs] server close failed after shutdown deadline",
+              );
+            },
+          );
+          if (serverResult.status === "failed") {
+            shutdownError = serverResult.error;
+            app.logger.error(
+              { error: shutdownErrorMessage(serverResult.error) },
+              "[vextjs] server close failed during shutdown",
             );
-          } catch (err) {
-            shutdownError = err;
           }
         }
 
         // ── 步骤 2：按 LIFO 顺序执行 onClose 钩子 ──
-        for (const h of [...closeHooks].reverse()) {
-          try {
-            await h();
-          } catch (err) {
+        for (const [index, h] of [...closeHooks].reverse().entries()) {
+          const stage = `onClose hook ${index + 1}`;
+          const hookResult = await deadline.run(stage, h, (error) => {
             app.logger.error(
-              { error: (err as Error).message },
+              { error: shutdownErrorMessage(error), stage },
+              "[vextjs] onClose hook failed after shutdown deadline",
+            );
+          });
+          if (hookResult.status === "failed") {
+            app.logger.error(
+              { error: shutdownErrorMessage(hookResult.error) },
               "[vextjs] onClose hook failed",
             );
           }
@@ -569,27 +600,58 @@ export function createApp(config: VextConfig): {
         closeHooks.length = 0;
 
         // ── 步骤 3：关闭响应缓存运行时资源 ──
-        try {
-          await responseCache.close?.();
-        } catch (err) {
+        const cacheResult = await deadline.run(
+          "response cache close",
+          () => responseCache.close?.(),
+          (error) => {
+            app.logger.error(
+              { error: shutdownErrorMessage(error) },
+              "[vextjs] response cache close failed after shutdown deadline",
+            );
+          },
+        );
+        if (cacheResult.status === "failed") {
           app.logger.error(
-            { error: (err as Error).message },
+            { error: shutdownErrorMessage(cacheResult.error) },
             "[vextjs] response cache close failed",
           );
         }
-        await hooks.emitSafe("app:close", {
-          app,
-          phase: "after",
-          mode: lifecycleMode,
-          source: lifecycleSource,
-        });
+        const afterResult = await deadline.run(
+          "app:close after",
+          () =>
+            hooks.emitSafe("app:close", {
+              app,
+              phase: "after",
+              mode: lifecycleMode,
+              source: lifecycleSource,
+            }),
+          (error) => {
+            app.logger.error(
+              { error: shutdownErrorMessage(error) },
+              "[vextjs] app:close after failed after shutdown deadline",
+            );
+          },
+        );
+        if (afterResult.status === "failed") {
+          app.logger.error(
+            { error: shutdownErrorMessage(afterResult.error) },
+            "[vextjs] app:close after failed",
+          );
+        }
 
         // 默认 logger 可能持有异步 sink，必须在所有 close hook 和 app:close after 之后收尾。
-        try {
-          await loggerLifecycle?.close();
-        } catch (err) {
+        const loggerResult = await deadline.run(
+          "logger close",
+          () => loggerLifecycle?.close(),
+          (error) => {
+            console.error(
+              `[vextjs] logger close failed after shutdown deadline: ${shutdownErrorMessage(error)}`,
+            );
+          },
+        );
+        if (loggerResult.status === "failed") {
           console.error(
-            `[vextjs] logger close failed: ${(err as Error).message}`,
+            `[vextjs] logger close failed: ${shutdownErrorMessage(loggerResult.error)}`,
           );
         }
 
@@ -817,34 +879,87 @@ function assertRateLimiter(value: unknown): asserts value is VextRateLimiter {
   assertFunction(value.check, "app.setRateLimiter() limiter.check");
 }
 
-async function closeServerWithTimeout(
-  serverHandle: VextServerHandle,
+type ShutdownStepResult =
+  | { status: "completed" }
+  | { status: "failed"; error: unknown }
+  | { status: "timed-out" };
+
+interface ShutdownDeadline {
+  run(
+    stage: string,
+    operation: () => unknown,
+    onDetachedError: (error: unknown) => void,
+  ): Promise<ShutdownStepResult>;
+}
+
+function createShutdownDeadline(
   timeoutMs: number,
   logger: VextRuntimeLogger,
-): Promise<void> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([
-      serverHandle.close(),
-      new Promise<void>((resolve) => {
-        timer = setTimeout(() => {
-          timer = undefined;
-          logger.warn(
-            "[vextjs] in-flight request wait timed out, forcing shutdown",
-          );
-          resolve();
-        }, timeoutMs);
-      }),
-    ]);
-  } catch (err) {
-    logger.error(
-      { error: (err as Error).message },
-      "[vextjs] server close failed during shutdown",
+): ShutdownDeadline {
+  const deadlineAt = Date.now() + timeoutMs;
+  let timedOutStage: string | undefined;
+
+  const markTimedOut = (stage: string): void => {
+    if (timedOutStage !== undefined) return;
+    timedOutStage = stage;
+    logger.warn(
+      { stage, timeoutMs },
+      "[vextjs] shutdown deadline exceeded; remaining cleanup will be invoked without waiting",
     );
-    throw err;
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
+  };
+
+  return {
+    async run(stage, operation, onDetachedError) {
+      let operationPromise: Promise<unknown>;
+      try {
+        operationPromise = Promise.resolve(operation());
+      } catch (error) {
+        operationPromise = Promise.reject(error);
+      }
+
+      const observeDetachedError = (): void => {
+        void operationPromise.catch((error) => {
+          try {
+            onDetachedError(error);
+          } catch (observerError) {
+            console.error(
+              `[vextjs] detached shutdown error observer failed: ${shutdownErrorMessage(observerError)}`,
+            );
+          }
+        });
+      };
+
+      const remainingMs = deadlineAt - Date.now();
+      if (remainingMs <= 0) {
+        observeDetachedError();
+        markTimedOut(stage);
+        return { status: "timed-out" };
+      }
+
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const completion = operationPromise.then<
+        ShutdownStepResult,
+        ShutdownStepResult
+      >(
+        () => ({ status: "completed" }),
+        (error: unknown) => ({ status: "failed", error }),
+      );
+      const timeout = new Promise<ShutdownStepResult>((resolve) => {
+        timer = setTimeout(() => resolve({ status: "timed-out" }), remainingMs);
+      });
+      const result = await Promise.race([completion, timeout]);
+      if (timer !== undefined) clearTimeout(timer);
+      if (result.status === "timed-out") {
+        observeDetachedError();
+        markTimedOut(stage);
+      }
+      return result;
+    },
+  };
+}
+
+function shutdownErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /**

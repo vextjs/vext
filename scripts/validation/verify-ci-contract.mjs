@@ -80,6 +80,12 @@ requireTokens("package-contracts", jobBlock("package-contracts"), [
   "npm run verify:adapters",
 ]);
 
+requireTokens("coverage", jobBlock("coverage"), [
+  "node-version: 22",
+  "npm run test:cov",
+  "coverage/lcov.info",
+]);
+
 requireTokens("windows-node22", jobBlock("windows-node22"), [
   "runs-on: windows-latest",
   "node-version: 22",

@@ -15,6 +15,7 @@ export interface ResponseSendState {
   headers: VextHeaders;
   requestId: string;
   startedAt: number;
+  hideInternalErrors: boolean;
 }
 
 type EventEmitterLike = {
@@ -77,6 +78,7 @@ export function beginResponseSend(
     headers: nextHeaders,
     requestId: payload.requestId,
     startedAt,
+    hideInternalErrors: res._hideInternalErrors ?? true,
   };
 }
 
@@ -138,36 +140,76 @@ function waitForStreamSettlement(
       return;
     }
 
-    let settled = false;
-    const listeners: Array<{
+    let responseSettled = false;
+    let sourceSettled = !observedSource;
+    type ListenerRegistration = {
       emitter: EventEmitterLike;
       event: string;
       listener: (...args: unknown[]) => void;
-    }> = [];
+    };
+    const targetListeners: ListenerRegistration[] = [];
+    const sourceListeners: ListenerRegistration[] = [];
 
-    const cleanup = () => {
+    const cleanup = (listeners: ListenerRegistration[]) => {
       for (const item of listeners) {
         removeListener(item.emitter, item.event, item.listener);
       }
+      listeners.length = 0;
     };
 
-    const settle = () => {
-      if (settled) return;
-      settled = true;
-      cleanup();
+    const settleResponse = () => {
+      if (responseSettled) return;
+      responseSettled = true;
+      cleanup(targetListeners);
+      if (sourceSettled) cleanup(sourceListeners);
       resolve();
     };
 
-    const fail = (error?: unknown) => {
+    const settleSource = () => {
+      if (sourceSettled) return;
+      sourceSettled = true;
+      cleanup(sourceListeners);
+      if (!observedTarget) settleResponse();
+    };
+
+    const failSource = (error?: unknown) => {
       // The source error is already observed here. Closing the response target
       // with the same Error can re-emit it through an underlying socket.
-      if (!writeStreamFailureResponse(observedTarget, state, error)) {
-        destroyTarget(observedTarget);
+      if (!responseSettled) {
+        if (!writeStreamFailureResponse(observedTarget, state, error)) {
+          destroyTarget(observedTarget);
+        }
       }
-      settle();
+      settleSource();
+      settleResponse();
+    };
+
+    const stopSource = () => {
+      if (!observedSource || sourceSettled) return;
+      if (observedSource.readableEnded || observedSource.destroyed) {
+        settleSource();
+        return;
+      }
+      try {
+        observedSource.destroy?.();
+      } catch {
+        settleSource();
+      }
+    };
+
+    const settleTarget = () => {
+      stopSource();
+      settleResponse();
+    };
+
+    const failTarget = () => {
+      stopSource();
+      destroyTarget(observedTarget);
+      settleResponse();
     };
 
     const on = (
+      listeners: ListenerRegistration[],
       emitter: EventEmitterLike,
       event: string,
       listener: (...args: unknown[]) => void,
@@ -177,22 +219,21 @@ function waitForStreamSettlement(
     };
 
     if (observedTarget) {
-      on(observedTarget, "finish", settle);
-      on(observedTarget, "close", settle);
-      on(observedTarget, "error", fail);
+      on(targetListeners, observedTarget, "finish", settleTarget);
+      on(targetListeners, observedTarget, "close", settleTarget);
+      on(targetListeners, observedTarget, "error", failTarget);
       if (observedTarget.writableEnded || observedTarget.destroyed) {
-        queueMicrotask(settle);
-      }
-    } else if (observedSource) {
-      on(observedSource, "end", settle);
-      on(observedSource, "close", settle);
-      if (observedSource.readableEnded || observedSource.destroyed) {
-        queueMicrotask(settle);
+        queueMicrotask(settleTarget);
       }
     }
 
     if (observedSource) {
-      on(observedSource, "error", fail);
+      on(sourceListeners, observedSource, "end", settleSource);
+      on(sourceListeners, observedSource, "close", settleSource);
+      on(sourceListeners, observedSource, "error", failSource);
+      if (observedSource.readableEnded || observedSource.destroyed) {
+        queueMicrotask(settleSource);
+      }
     }
   });
 }
@@ -228,17 +269,30 @@ function writeStreamFailureResponse(
   if (target.headersSent || target.writableEnded || target.destroyed) {
     return false;
   }
-  const body = JSON.stringify({
-    code: 500,
-    message:
-      error instanceof Error && error.message
-        ? error.message
-        : "Stream response failed",
+  const body = createStreamFailureBody(error, {
     requestId: state.requestId,
+    hideInternalErrors: state.hideInternalErrors,
   });
   target.statusCode = 500;
   target.setHeader?.("Content-Type", "application/json; charset=utf-8");
   target.setHeader?.("Content-Length", Buffer.byteLength(body));
   target.end(body);
   return true;
+}
+
+export function createStreamFailureBody(
+  error: unknown,
+  options: { requestId?: string; hideInternalErrors?: boolean } = {},
+): string {
+  const message =
+    (options.hideInternalErrors ?? true)
+      ? "Internal Server Error"
+      : error instanceof Error && error.message
+        ? error.message
+        : "Stream response failed";
+  return JSON.stringify({
+    code: 500,
+    message,
+    ...(options.requestId ? { requestId: options.requestId } : {}),
+  });
 }

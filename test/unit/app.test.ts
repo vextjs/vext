@@ -352,6 +352,129 @@ describe("createApp", () => {
     );
   });
 
+  it("applies one absolute shutdown deadline and still invokes remaining cleanup", async () => {
+    const { app, internals } = createApp({
+      ...DEFAULT_CONFIG,
+      shutdown: { timeout: 0.01 },
+      _testMode: true,
+    });
+    const warn = vi.fn();
+    const order: string[] = [];
+    let releaseBefore!: () => void;
+    const beforeBarrier = new Promise<void>((resolve) => {
+      releaseBefore = resolve;
+    });
+    app.setLogger(() => ({ warn }));
+    app.hooks.on("app:close", async ({ phase }) => {
+      order.push(`hook:${phase}`);
+      if (phase === "before") await beforeBarrier;
+    });
+    app.onClose(() => {
+      order.push("close:first");
+    });
+    app.onClose(() => {
+      order.push("close:second");
+    });
+    const cacheClose = vi.fn(() => {
+      order.push("cache");
+    });
+    (app.cache._getResponseCache() as { close?: () => void }).close =
+      cacheClose;
+    const serverHandle = {
+      port: 0,
+      host: "127.0.0.1",
+      close: vi.fn(() => {
+        order.push("server");
+        return Promise.resolve();
+      }),
+    };
+
+    const shutdown = internals.shutdown(serverHandle, { skipExit: true });
+    const outcome = await Promise.race([
+      shutdown.then(() => "shutdown" as const),
+      new Promise<"watchdog">((resolve) =>
+        setTimeout(() => resolve("watchdog"), 100),
+      ),
+    ]);
+    releaseBefore();
+    await shutdown;
+
+    expect(outcome).toBe("shutdown");
+    expect(serverHandle.close).toHaveBeenCalledOnce();
+    expect(cacheClose).toHaveBeenCalledOnce();
+    expect(order).toEqual([
+      "hook:before",
+      "server",
+      "close:second",
+      "close:first",
+      "cache",
+      "hook:after",
+    ]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ stage: "app:close before" }),
+      expect.stringContaining("shutdown deadline exceeded"),
+    );
+    await expect(
+      internals.shutdown(serverHandle, { skipExit: true }),
+    ).resolves.toBeUndefined();
+    expect(serverHandle.close).toHaveBeenCalledOnce();
+  });
+
+  it("observes a timed-out onClose rejection while later cleanup still runs", async () => {
+    const { app, internals } = createApp({
+      ...DEFAULT_CONFIG,
+      shutdown: { timeout: 0.01 },
+      _testMode: true,
+    });
+    const error = vi.fn();
+    const order: string[] = [];
+    let releaseBlocking!: () => void;
+    let rejectBlocking!: (error: Error) => void;
+    const blocking = new Promise<void>((resolve, reject) => {
+      releaseBlocking = resolve;
+      rejectBlocking = reject;
+    });
+    app.setLogger(() => ({ error }));
+    app.onClose(() => {
+      order.push("remaining");
+    });
+    app.onClose(() => {
+      order.push("blocking");
+      return blocking;
+    });
+    const cacheClose = vi.fn(() => {
+      order.push("cache");
+    });
+    (app.cache._getResponseCache() as { close?: () => void }).close =
+      cacheClose;
+
+    const shutdown = internals.shutdown(undefined, { skipExit: true });
+    const outcome = await Promise.race([
+      shutdown.then(() => "shutdown" as const),
+      new Promise<"watchdog">((resolve) =>
+        setTimeout(() => resolve("watchdog"), 100),
+      ),
+    ]);
+    if (outcome === "watchdog") {
+      releaseBlocking();
+      await shutdown;
+    } else {
+      rejectBlocking(new Error("late cleanup failure"));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+
+    expect(outcome).toBe("shutdown");
+    expect(order).toEqual(["blocking", "remaining", "cache"]);
+    expect(cacheClose).toHaveBeenCalledOnce();
+    expect(error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: "late cleanup failure",
+        stage: "onClose hook 1",
+      }),
+      "[vextjs] onClose hook failed after shutdown deadline",
+    );
+  });
+
   it("validates request ids from headers and custom generators", async () => {
     const next = vi.fn();
     const setHeader = vi.fn();

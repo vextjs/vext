@@ -234,12 +234,12 @@ By default only GET / HEAD requests are processed, and successful responses sent
 
 ### Cache Key algorithm
 
-The default key includes the request method, path, sorted query, `partitionKey` and `vary` request headers.
+The default key is a versioned JSON tuple containing the request method, path, sorted query tuples and normalized `vary` header tuples. Tuple boundaries prevent delimiter collisions; `partitionKey` remains an additional isolation dimension in the underlying cache key.
 
 ```
-GET /products → GET:/products
-GET /products?limit=10&page=2 → GET:/products?limit=10&page=2
-GET /products (Accept-Language: zh-CN) → GET:/products|accept-language=zh-CN
+GET /products → ["v2","GET","/products",[],[]]
+GET /products?limit=10&page=2 → ["v2","GET","/products",[["limit","10"],["page","2"]],[]]
+GET /products (Accept-Language: zh-CN) → ["v2","GET","/products",[],[["accept-language",["zh-CN"]]]]
 ```
 
 - Query parameters are automatically sorted (`?b=2&a=1` ≡ `?a=1&b=2`)
@@ -275,8 +275,8 @@ app.post("/products", {}, async (req, res) => {
   res.json({ created: true }, 201);
 });
 
-//Delete the specified key
-await app.cache.delete("GET:/products");
+// Delete the specified default key
+await app.cache.delete('["v2","GET","/products",[],[]]');
 
 //Clear all caches
 await app.cache.clear();

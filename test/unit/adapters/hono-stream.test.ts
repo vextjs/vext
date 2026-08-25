@@ -2,7 +2,7 @@ import { createServer, get, IncomingMessage, ServerResponse } from "node:http";
 import { Socket } from "node:net";
 import { PassThrough, Readable } from "node:stream";
 import { performance } from "node:perf_hooks";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createHonoAdapter } from "../../../src/adapters/hono/adapter.js";
 import { getHandlerDone } from "../../../src/lib/handler-completion.js";
 import { createHookManager } from "../../../src/lib/hooks.js";
@@ -16,12 +16,25 @@ interface DispatchResult {
   text: string;
 }
 
-function createAdapter(): VextAdapter {
+interface StreamSettlementResult {
+  backpressureViolated?: boolean;
+  error?: unknown;
+  settlement: "destroyed" | "ended";
+  text: string;
+}
+
+interface StreamSettlementOptions {
+  closeAfterFirstWrite?: boolean;
+  forceBackpressureOnFirstWrite?: boolean;
+}
+
+function createAdapter(hideInternalErrors = true): VextAdapter {
   return createHonoAdapter({
     config: {
       requestContext: { enabled: false },
       requestId: { header: "x-request-id" },
       trustProxy: false,
+      response: { hideInternalErrors },
     },
     hooks: createHookManager(),
   } as unknown as VextApp);
@@ -108,6 +121,105 @@ function dispatch(
       handler(request, response);
     } catch (error) {
       cleanup();
+      reject(error);
+    }
+  });
+}
+
+function dispatchStreamSettlement(
+  handler: (req: IncomingMessage, res: ServerResponse) => void,
+  path: string,
+  options: StreamSettlementOptions = {},
+): Promise<StreamSettlementResult> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error(`stream settlement timed out for GET ${path}`)),
+      10_000,
+    );
+    const chunks: Buffer[] = [];
+    const requestSocket = new Socket();
+    const request = Object.assign(Readable.from(Buffer.alloc(0)), {
+      method: "GET",
+      url: path,
+      headers: { host: "localhost" },
+      rawHeaders: ["host", "localhost"],
+      socket: requestSocket,
+      connection: requestSocket,
+      complete: true,
+      aborted: false,
+      trailers: {},
+      rawTrailers: [],
+    }) as IncomingMessage;
+    const response = new ServerResponse(request);
+    const responseSocket = new PassThrough() as unknown as Socket;
+    responseSocket.resume();
+    response.assignSocket(responseSocket);
+
+    let settled = false;
+    let writeCount = 0;
+    let drainObserved = !options.forceBackpressureOnFirstWrite;
+    let backpressureViolated = false;
+    let drainTimer: ReturnType<typeof setTimeout> | undefined;
+    const settle = (
+      settlement: StreamSettlementResult["settlement"],
+      error?: unknown,
+    ) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (drainTimer !== undefined) clearTimeout(drainTimer);
+      requestSocket.destroy();
+      responseSocket.destroy();
+      resolve({
+        backpressureViolated,
+        error,
+        settlement,
+        text: Buffer.concat(chunks).toString("utf8"),
+      });
+    };
+
+    const originalWrite = response.write.bind(response);
+    const originalEnd = response.end.bind(response);
+    const originalDestroy = response.destroy.bind(response);
+    (response as any).write = (chunk: unknown, ...args: any[]) => {
+      writeCount += 1;
+      if (writeCount > 1 && !drainObserved) backpressureViolated = true;
+      if (chunk !== undefined && chunk !== null) {
+        chunks.push(Buffer.from(chunk as any));
+      }
+      const result = originalWrite(chunk as any, ...args);
+      if (writeCount === 1 && options.closeAfterFirstWrite) {
+        queueMicrotask(() => response.destroy());
+      }
+      if (writeCount === 1 && options.forceBackpressureOnFirstWrite) {
+        response.once("drain", () => {
+          drainObserved = true;
+        });
+        drainTimer = setTimeout(() => response.emit("drain"), 10);
+        return false;
+      }
+      return result;
+    };
+    (response as any).end = (chunk?: unknown, ...args: any[]) => {
+      if (chunk !== undefined && chunk !== null) {
+        chunks.push(Buffer.from(chunk as any));
+      }
+      const result = originalEnd(chunk as any, ...args);
+      settle("ended");
+      return result;
+    };
+    (response as any).destroy = (error?: Error) => {
+      const result = originalDestroy();
+      settle("destroyed", error);
+      return result;
+    };
+
+    try {
+      handler(request, response);
+    } catch (error) {
+      clearTimeout(timeout);
+      requestSocket.destroy();
+      responseSocket.destroy();
       reject(error);
     }
   });
@@ -242,7 +354,174 @@ describe("Hono adapter stream responses", () => {
     );
     expect(JSON.parse(response.text)).toEqual({
       code: 500,
+      message: "Internal Server Error",
+    });
+  });
+
+  it("exposes Node readable error details only when hideInternalErrors is false", async () => {
+    const adapter = createAdapter(false);
+    registerGet(adapter, "/stream-error-exposed", async (req, res) => {
+      req.requestId = "req-1";
+      res.stream(
+        new Readable({
+          read() {
+            this.destroy(new Error("stream failed"));
+          },
+        }),
+        "text/plain",
+      );
+    });
+
+    const response = await dispatch(
+      adapter.buildHandler(),
+      "/stream-error-exposed",
+    );
+
+    expect(response.status).toBe(500);
+    expect(JSON.parse(response.text)).toEqual({
+      code: 500,
       message: "stream failed",
     });
+  });
+
+  it("destroys the connection when a Web Response body fails after bytes were sent", async () => {
+    const bodyDescriptor = Object.getOwnPropertyDescriptor(
+      Response.prototype,
+      "body",
+    );
+    if (!bodyDescriptor?.get) {
+      throw new Error("Response.prototype.body getter is unavailable");
+    }
+
+    const streamError = new Error("stream failed after first chunk");
+    const failingBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("partial"));
+        setTimeout(() => controller.error(streamError), 5);
+      },
+    });
+    Object.defineProperty(Response.prototype, "body", {
+      ...bodyDescriptor,
+      get(this: Response) {
+        if (this.headers.get("x-vext-test-stream-error") === "1") {
+          return failingBody;
+        }
+        return bodyDescriptor.get!.call(this);
+      },
+    });
+
+    try {
+      const adapter = createAdapter();
+      registerGet(adapter, "/web-stream-partial-error", async (req, res) => {
+        req.requestId = "req-1";
+        res.setHeader("x-vext-test-stream-error", "1").text("complete-body");
+      });
+
+      const response = await dispatchStreamSettlement(
+        adapter.buildHandler(),
+        "/web-stream-partial-error",
+      );
+
+      expect(response.text).toBe("partial");
+      expect(response.settlement).toBe("destroyed");
+      expect(response.error).toBeUndefined();
+    } finally {
+      Object.defineProperty(Response.prototype, "body", bodyDescriptor);
+    }
+  });
+
+  it("honors Node response backpressure while bridging a Web Response body", async () => {
+    const bodyDescriptor = Object.getOwnPropertyDescriptor(
+      Response.prototype,
+      "body",
+    );
+    if (!bodyDescriptor?.get) {
+      throw new Error("Response.prototype.body getter is unavailable");
+    }
+    const streamingBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("first"));
+        controller.enqueue(new TextEncoder().encode("second"));
+        controller.close();
+      },
+    });
+    Object.defineProperty(Response.prototype, "body", {
+      ...bodyDescriptor,
+      get(this: Response) {
+        if (this.headers.get("x-vext-test-backpressure") === "1") {
+          return streamingBody;
+        }
+        return bodyDescriptor.get!.call(this);
+      },
+    });
+
+    try {
+      const adapter = createAdapter();
+      registerGet(adapter, "/web-stream-backpressure", async (req, res) => {
+        req.requestId = "req-1";
+        res.setHeader("x-vext-test-backpressure", "1").text("unused");
+      });
+
+      const response = await dispatchStreamSettlement(
+        adapter.buildHandler(),
+        "/web-stream-backpressure",
+        { forceBackpressureOnFirstWrite: true },
+      );
+
+      expect(response.settlement).toBe("ended");
+      expect(response.text).toBe("firstsecond");
+      expect(response.backpressureViolated).toBe(false);
+    } finally {
+      Object.defineProperty(Response.prototype, "body", bodyDescriptor);
+    }
+  });
+
+  it("cancels a Web Response body when the downstream connection closes", async () => {
+    const bodyDescriptor = Object.getOwnPropertyDescriptor(
+      Response.prototype,
+      "body",
+    );
+    if (!bodyDescriptor?.get) {
+      throw new Error("Response.prototype.body getter is unavailable");
+    }
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    const cancel = vi.fn();
+    const streamingBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+        controller.enqueue(new TextEncoder().encode("partial"));
+      },
+      cancel,
+    });
+    Object.defineProperty(Response.prototype, "body", {
+      ...bodyDescriptor,
+      get(this: Response) {
+        if (this.headers.get("x-vext-test-downstream-close") === "1") {
+          return streamingBody;
+        }
+        return bodyDescriptor.get!.call(this);
+      },
+    });
+
+    try {
+      const adapter = createAdapter();
+      registerGet(adapter, "/web-stream-downstream-close", async (req, res) => {
+        req.requestId = "req-1";
+        res.setHeader("x-vext-test-downstream-close", "1").text("unused");
+      });
+
+      const response = await dispatchStreamSettlement(
+        adapter.buildHandler(),
+        "/web-stream-downstream-close",
+        { closeAfterFirstWrite: true },
+      );
+
+      expect(response.settlement).toBe("destroyed");
+      expect(response.text).toBe("partial");
+      await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+    } finally {
+      streamController.error(new Error("test cleanup"));
+      Object.defineProperty(Response.prototype, "body", bodyDescriptor);
+    }
   });
 });

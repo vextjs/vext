@@ -323,6 +323,8 @@ export function createExpressAdapter(
 
         const res = createVextResponse(expressRes, () => req.requestId, req);
         res._hooks = app.hooks;
+        res._hideInternalErrors =
+          app.config.response?.hideInternalErrors ?? true;
 
         // 🆕 5.7: ALS 可配置跳过
         const runNotFound = async () => {
@@ -383,6 +385,8 @@ export function createExpressAdapter(
               req,
             );
             res._hooks = app.hooks;
+            res._hideInternalErrors =
+              app.config.response?.hideInternalErrors ?? true;
 
             errorHandler(err, req, res);
             res._flush?.();
@@ -522,6 +526,8 @@ export function createExpressAdapter(
               method,
             );
             res._hooks = app.hooks;
+            res._hideInternalErrors =
+              app.config.response?.hideInternalErrors ?? true;
 
             // 在 AsyncLocalStorage 请求上下文中执行整个中间件链
             // 确保 app.throw 等内部方法能通过 requestContext.getStore() 访问请求级数据

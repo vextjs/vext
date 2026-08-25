@@ -3,14 +3,21 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { classifyReleaseVersion } from "./release-channel.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const defaultProjectRoot = path.resolve(scriptDir, "..");
-const VERSION_PATTERN =
-  /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u;
 
 function addCheck(checks, ok, description, detail) {
   checks.push({ ok, description, ...(detail ? { detail } : {}) });
+}
+
+function classifyOrUndefined(value) {
+  try {
+    return classifyReleaseVersion(value);
+  } catch {
+    return undefined;
+  }
 }
 
 export function validateVersionContract(input) {
@@ -20,10 +27,13 @@ export function validateVersionContract(input) {
   const stable = channels?.stable;
   const next = channels?.next;
   const channel = channels?.channel;
+  const packageRelease = classifyOrUndefined(packageVersion);
+  const stableRelease = classifyOrUndefined(stable);
+  const nextRelease = classifyOrUndefined(next);
 
   addCheck(
     checks,
-    VERSION_PATTERN.test(packageVersion),
+    packageRelease !== undefined,
     "package.json exposes a valid semantic version",
     packageVersion,
   );
@@ -35,13 +45,13 @@ export function validateVersionContract(input) {
   );
   addCheck(
     checks,
-    typeof stable === "string" && VERSION_PATTERN.test(stable),
-    "website stable channel is a valid semantic version",
+    stableRelease?.releaseChannel === "stable",
+    "website stable channel is a valid stable semantic version",
     String(stable ?? "missing"),
   );
   addCheck(
     checks,
-    typeof next === "string" && VERSION_PATTERN.test(next),
+    nextRelease !== undefined,
     "website next channel is a valid semantic version",
     String(next ?? "missing"),
   );
@@ -52,15 +62,19 @@ export function validateVersionContract(input) {
     `next=${next ?? "missing"}, package=${packageVersion}`,
   );
 
-  const expectedChannel = stable === next ? "stable" : "next";
+  const expectedChannel = input.release
+    ? packageRelease?.releaseChannel
+    : stable === next
+      ? "stable"
+      : "next";
   addCheck(
     checks,
-    channel === expectedChannel,
+    expectedChannel !== undefined && channel === expectedChannel,
     "website channel label matches stable/next state",
-    `channel=${channel ?? "missing"}, expected=${expectedChannel}`,
+    `channel=${channel ?? "missing"}, expected=${expectedChannel ?? "invalid package version"}`,
   );
 
-  if (input.release) {
+  if (input.release && packageRelease?.releaseChannel === "stable") {
     addCheck(
       checks,
       stable === packageVersion,
@@ -71,6 +85,13 @@ export function validateVersionContract(input) {
       checks,
       channel === "stable",
       "release requires website channel=stable",
+      `channel=${channel ?? "missing"}`,
+    );
+  } else if (input.release && packageRelease?.releaseChannel === "next") {
+    addCheck(
+      checks,
+      channel === "next",
+      "prerelease requires website channel=next",
       `channel=${channel ?? "missing"}`,
     );
   }
@@ -178,6 +199,9 @@ export function runVersionCheck(args = process.argv.slice(2)) {
   console.log(`Source candidate: v${input.packageVersion}`);
   console.log(`Published stable: v${input.channels.stable}`);
   console.log(`Docs next:       v${input.channels.next}`);
+  console.log(
+    `Release channel: ${classifyOrUndefined(input.packageVersion)?.releaseChannel ?? "invalid"}`,
+  );
   console.log("──────────────────────────────────────────");
   for (const check of result.checks) {
     console.log(`${check.ok ? "OK  " : "FAIL"} ${check.description}`);

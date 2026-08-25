@@ -22,4 +22,23 @@ describe("query normalization", () => {
       single: "value",
     });
   });
+
+  it("preserves legal prototype-named query keys as enumerable own properties", () => {
+    const parsed = parseQueryString(
+      "__proto__=proto&constructor=ctor&toString=string&dup=a&dup=b",
+    );
+    const flattened = flattenQueryRecord(
+      JSON.parse('{"__proto__":"proto","constructor":"ctor"}'),
+    );
+
+    expect(Object.getPrototypeOf(parsed)).toBe(Object.prototype);
+    expect(Object.hasOwn(parsed, "__proto__")).toBe(true);
+    expect(parsed.__proto__).toBe("proto");
+    expect(parsed.constructor).toBe("ctor");
+    expect(parsed.toString).toBe("string");
+    expect(parsed.dup).toBe("a");
+    expect(Object.getPrototypeOf(flattened)).toBe(Object.prototype);
+    expect(Object.hasOwn(flattened, "__proto__")).toBe(true);
+    expect(flattened.__proto__).toBe("proto");
+  });
 });

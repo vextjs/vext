@@ -448,15 +448,15 @@ Graceful shutdown of configuration.
 
 | Field          | Type                                       | Default Value | Description                                                       |
 | -------------- | ------------------------------------------ | ------------- | ----------------------------------------------------------------- |
-| `timeout`      | `number`                                   | `10`          | Shutdown timeout in seconds                                       |
+| `timeout`      | `number`                                   | `10`          | Absolute deadline for the full shutdown pipeline, in seconds      |
 | `onFatalError` | `(error, origin) => void \| Promise<void>` | `undefined`   | Callback before exit for `uncaughtException`/`unhandledRejection` |
 
 After receiving the `SIGTERM` / `SIGINT` signal, the framework will:
 
-1. Stop accepting new requests
-2. Wait for the in-flight request to complete (no more than `timeout` seconds)
-3. Execute all `onClose` hooks in LIFO order
-4. Exit the process
+1. Establish one absolute `timeout` deadline when shutdown starts
+2. Stop accepting new requests and wait for in-flight requests to complete
+3. Run `onClose` in LIFO order, then close the response cache, lifecycle hooks, and logger
+4. After the deadline, invoke cleanup that has not started without waiting further, then exit
 
 ```typescript
 export default {

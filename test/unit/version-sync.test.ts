@@ -59,6 +59,44 @@ describe("version channel contract", () => {
     expect(validateVersionContract(current).errors).toEqual([]);
   });
 
+  it("accepts a prerelease only on next while preserving published stable", () => {
+    const version = "2.1.0-rc.1";
+    const stable = "1.0.2";
+    const current = input({
+      packageVersion: version,
+      lockVersion: version,
+      lockRootVersion: version,
+      channels: { stable, next: version, channel: "next" },
+      release: true,
+    });
+    current.files.cli = {
+      en: `docs v${version}; output vextjs v${stable}`,
+      zh: `docs v${version}; output vextjs v${stable}`,
+    };
+    current.files.quickStart = {
+      en: `docs v${version}; stable v${stable}; "vextjs": "^${stable}"`,
+      zh: `docs v${version}; stable v${stable}; "vextjs": "^${stable}"`,
+    };
+
+    expect(validateVersionContract(current).errors).toEqual([]);
+  });
+
+  it("rejects a prerelease labelled as the stable docs channel", () => {
+    const version = "2.1.0-beta.2";
+    const result = validateVersionContract(
+      input({
+        packageVersion: version,
+        lockVersion: version,
+        lockRootVersion: version,
+        channels: { stable: "1.0.2", next: version, channel: "stable" },
+        release: true,
+      }),
+    );
+    expect(result.errors.map((error) => error.description)).toContain(
+      "prerelease requires website channel=next",
+    );
+  });
+
   it("rejects public examples that advertise next instead of stable", () => {
     const current = input();
     current.files.quickStart.en =

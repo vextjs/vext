@@ -89,6 +89,7 @@
     "format:check:all": "prettier --check .",
     "release:preflight": "node scripts/release-preflight.mjs",
     "release:preflight:final": "node scripts/release-preflight.mjs --final",
+    "release:channel": "node scripts/release-channel.mjs",
     "prepublishOnly": "npm run release:preflight:final",
     "test:audit": "npm run verify:exports && npm run verify:adapters",
     "verify:exports": "node test/verify-package-exports.mjs",
@@ -99,6 +100,7 @@
     "verify:pack-install": "node scripts/validation/verify-packed-install.mjs",
     "verify:docs-contract": "node scripts/validation/verify-documentation-contract.mjs",
     "verify:ci-contract": "node scripts/validation/verify-ci-contract.mjs",
+    "verify:release-ancestry": "node scripts/verify-release-ancestry.mjs",
     "verify:response-serializer": "node scripts/validation/benchmark-response-serialization.mjs"
   },
   "keywords": [

@@ -315,6 +315,8 @@ export function createKoaAdapter(
         entry.method,
       );
       res._hooks = vextApp.hooks;
+      res._hideInternalErrors =
+        vextApp.config.response?.hideInternalErrors ?? true;
 
       const runChain = async () => {
         try {
@@ -377,6 +379,8 @@ export function createKoaAdapter(
 
           const res = createVextResponse(ctx, () => req.requestId, req);
           res._hooks = vextApp.hooks;
+          res._hideInternalErrors =
+            vextApp.config.response?.hideInternalErrors ?? true;
           errorHandler(err, req, res);
           res._flush?.();
           ctx.respond = false;
@@ -402,6 +406,8 @@ export function createKoaAdapter(
 
       const res = createVextResponse(ctx, () => req.requestId, req);
       res._hooks = vextApp.hooks;
+      res._hideInternalErrors =
+        vextApp.config.response?.hideInternalErrors ?? true;
 
       const runNotFound = async () => {
         const noop = async (): Promise<void> => {};

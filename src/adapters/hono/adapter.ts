@@ -31,6 +31,7 @@ import type { VextResponse } from "../../types/response.js";
 import { requestContext } from "../../lib/request-context.js";
 import { createAuthContextSnapshot } from "../../lib/auth.js";
 import { markHandlerDone } from "../../lib/handler-completion.js";
+import { createStreamFailureBody } from "../../lib/response-hooks.js";
 import type { RouteOptions, VextBodyParserConfig } from "../../types/app.js";
 import { resolveRouteBodyParserConfig } from "../../lib/middlewares/body-parser.js";
 import {
@@ -142,6 +143,127 @@ function writeWebResponseHeaders(
   }
 }
 
+function finishWebResponseFailure(
+  nodeRes: ServerResponse,
+  error: unknown,
+  hideInternalErrors: boolean,
+): void {
+  if (nodeRes.writableEnded || nodeRes.destroyed) return;
+  if (nodeRes.headersSent) {
+    // The source error is already observed here. Passing it into destroy()
+    // can re-emit the same failure through the assigned socket.
+    nodeRes.destroy();
+    return;
+  }
+
+  const body = createStreamFailureBody(error, { hideInternalErrors });
+  nodeRes.statusCode = 500;
+  nodeRes.setHeader("Content-Type", "application/json; charset=utf-8");
+  nodeRes.setHeader("Content-Length", Buffer.byteLength(body));
+  nodeRes.end(body);
+}
+
+function cancelWebResponseReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  reason?: unknown,
+): void {
+  try {
+    const cancellation = reader.cancel(reason);
+    void cancellation.catch(() => {
+      // Downstream shutdown owns the outcome; cancellation is best-effort.
+    });
+  } catch {
+    // A synchronously failed cancellation must not obscure target settlement.
+  }
+}
+
+function waitForNodeResponseDrain(nodeRes: ServerResponse): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => {
+      nodeRes.off("drain", onDrain);
+      nodeRes.off("close", onClose);
+      nodeRes.off("error", onError);
+    };
+    const complete = (operation: () => void) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      operation();
+    };
+    const onDrain = () => complete(resolve);
+    const onClose = () =>
+      complete(() => reject(new Error("downstream response closed")));
+    const onError = (error: Error) => complete(() => reject(error));
+
+    nodeRes.once("drain", onDrain);
+    nodeRes.once("close", onClose);
+    nodeRes.once("error", onError);
+    if (nodeRes.destroyed || nodeRes.writableEnded) queueMicrotask(onClose);
+  });
+}
+
+async function writeWebResponse(
+  nodeRes: ServerResponse,
+  webResponse: Response,
+  hideInternalErrors: boolean,
+): Promise<void> {
+  nodeRes.statusCode = webResponse.status;
+  writeWebResponseHeaders(nodeRes, webResponse.headers);
+
+  if (!webResponse.body) {
+    nodeRes.end();
+    return;
+  }
+
+  const reader = webResponse.body.getReader();
+  let downstreamClosed = nodeRes.destroyed || nodeRes.writableEnded;
+  const onTargetClose = () => {
+    downstreamClosed = true;
+    cancelWebResponseReader(reader);
+  };
+  const onTargetError = (error: Error) => {
+    downstreamClosed = true;
+    cancelWebResponseReader(reader, error);
+  };
+  nodeRes.once("close", onTargetClose);
+  nodeRes.once("error", onTargetError);
+  try {
+    while (true) {
+      if (downstreamClosed || nodeRes.destroyed || nodeRes.writableEnded) break;
+      const { done, value } = await reader.read();
+      if (
+        done ||
+        downstreamClosed ||
+        nodeRes.destroyed ||
+        nodeRes.writableEnded
+      ) {
+        break;
+      }
+      if (!nodeRes.write(value)) {
+        await waitForNodeResponseDrain(nodeRes);
+      }
+    }
+  } catch (error) {
+    if (!downstreamClosed && !nodeRes.destroyed && !nodeRes.writableEnded) {
+      finishWebResponseFailure(nodeRes, error, hideInternalErrors);
+    }
+    return;
+  } finally {
+    nodeRes.off("close", onTargetClose);
+    nodeRes.off("error", onTargetError);
+    try {
+      reader.releaseLock();
+    } catch {
+      // A downstream cancellation can settle concurrently with lock release.
+    }
+  }
+
+  if (!downstreamClosed && !nodeRes.writableEnded && !nodeRes.destroyed) {
+    nodeRes.end();
+  }
+}
+
 /**
  * createHonoAdapter — 创建基于 Hono 的 VextAdapter 实例
  *
@@ -248,6 +370,8 @@ export function createHonoAdapter(app: VextApp): VextAdapter {
           upperMethod,
         );
         res._hooks = app.hooks;
+        res._hideInternalErrors =
+          app.config.response?.hideInternalErrors ?? true;
 
         // 在 AsyncLocalStorage 请求上下文中执行整个中间件链
         // 确保 app.throw 等内部方法能通过 requestContext.getStore() 访问请求级数据
@@ -332,6 +456,8 @@ export function createHonoAdapter(app: VextApp): VextAdapter {
 
         const res = createHonoResponse(c, () => req.requestId, box, req);
         res._hooks = app.hooks;
+        res._hideInternalErrors =
+          app.config.response?.hideInternalErrors ?? true;
 
         // 🆕 5.7: ALS 可配置跳过
         const runNotFound = async () => {
@@ -495,59 +621,19 @@ export function createHonoAdapter(app: VextApp): VextAdapter {
             if (env.vextStreamOwned) {
               return;
             }
-            // 将 Web Response 写入 Node.js ServerResponse
-            nodeRes.statusCode = webResponse.status;
-
-            // 设置响应头。Set-Cookie 必须保留为独立 header 行，不能让
-            // Web Headers forEach + Node setHeader 的覆盖语义丢失多值。
-            writeWebResponseHeaders(nodeRes, webResponse.headers);
-
-            // 写入响应体
-            if (webResponse.body) {
-              const reader = webResponse.body.getReader();
-              try {
-                while (true) {
-                  const { done, value } = await reader.read();
-                  if (done) break;
-                  nodeRes.write(value);
-                }
-              } catch (error) {
-                if (!nodeRes.headersSent && !nodeRes.writableEnded) {
-                  const body = JSON.stringify({
-                    code: 500,
-                    message:
-                      error instanceof Error && error.message
-                        ? error.message
-                        : "Stream response failed",
-                  });
-                  nodeRes.statusCode = 500;
-                  nodeRes.setHeader(
-                    "Content-Type",
-                    "application/json; charset=utf-8",
-                  );
-                  nodeRes.setHeader("Content-Length", Buffer.byteLength(body));
-                  nodeRes.end(body);
-                  return;
-                }
-              } finally {
-                if (!nodeRes.writableEnded) nodeRes.end();
-              }
-            } else {
-              nodeRes.end();
-            }
+            await writeWebResponse(
+              nodeRes,
+              webResponse,
+              app.config.response?.hideInternalErrors ?? true,
+            );
           })
-          .catch(() => {
+          .catch((error) => {
             // Hono 内部未捕获的异常（理论上不应到达此处，因为有 errorHandler）
-            if (!nodeRes.headersSent) {
-              nodeRes.statusCode = 500;
-              nodeRes.setHeader("Content-Type", "application/json");
-              nodeRes.end(
-                JSON.stringify({
-                  code: 500,
-                  message: "Internal Server Error",
-                }),
-              );
-            }
+            finishWebResponseFailure(
+              nodeRes,
+              error,
+              app.config.response?.hideInternalErrors ?? true,
+            );
           });
         markHandlerDone(nodeRes, completion);
         void completion;
@@ -624,6 +710,7 @@ export function createHonoAdapter(app: VextApp): VextAdapter {
       "HEAD",
     );
     res._hooks = app.hooks;
+    res._hideInternalErrors = app.config.response?.hideInternalErrors ?? true;
 
     if (store.chain === null) {
       store.chain = globalMiddlewares.concat(store.routeChain);

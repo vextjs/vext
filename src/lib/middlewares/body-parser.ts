@@ -4,6 +4,7 @@ import type {
   VextMultipartConfig,
   MultipartRouteConfig,
 } from "../../types/app.js";
+import { defineEnumerableOwn } from "../own-property.js";
 import type { VextRequest, ParsedFile } from "../../types/request.js";
 
 /**
@@ -400,7 +401,7 @@ export function createBodyParserMiddleware(
         const params = new URLSearchParams(rawBody);
         const parsed: Record<string, string> = {};
         for (const [key, value] of params.entries()) {
-          parsed[key] = value;
+          defineEnumerableOwn(parsed, key, value);
         }
         req.body = parsed;
       }

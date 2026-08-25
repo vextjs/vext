@@ -1,3 +1,5 @@
+import { defineEnumerableOwn } from "./own-property.js";
+
 /**
  * Normalize host-framework query objects into VextRequest.query.
  *
@@ -13,13 +15,13 @@ export function flattenQueryRecord(query: unknown): Record<string, string> {
 
   for (const [key, value] of Object.entries(query as Record<string, unknown>)) {
     if (typeof value === "string") {
-      result[key] = value;
+      defineEnumerableOwn(result, key, value);
       continue;
     }
     if (Array.isArray(value)) {
       const first = value.find((entry) => typeof entry === "string");
       if (typeof first === "string") {
-        result[key] = first;
+        defineEnumerableOwn(result, key, first);
       }
       continue;
     }
@@ -30,7 +32,7 @@ export function flattenQueryRecord(query: unknown): Record<string, string> {
         typeof value === "boolean" ||
         typeof value === "bigint")
     ) {
-      result[key] = String(value);
+      defineEnumerableOwn(result, key, String(value));
     }
   }
 
@@ -51,8 +53,8 @@ export function parseQueryString(
   );
   const result: Record<string, string> = {};
   for (const [key, value] of searchParams) {
-    if (!(key in result)) {
-      result[key] = value;
+    if (!Object.hasOwn(result, key)) {
+      defineEnumerableOwn(result, key, value);
     }
   }
   return result;

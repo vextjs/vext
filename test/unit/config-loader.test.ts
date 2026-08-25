@@ -539,6 +539,12 @@ describe("validateConfig", () => {
       expect(() => _validateConfig({ cors: { origins: "*" } })).toThrow(
         "config.cors.origins must be an array of strings",
       );
+      expect(() =>
+        _validateConfig({ cors: { origins: ["*"], credentials: true } }),
+      ).toThrow("cannot combine credentials: true with wildcard origin");
+      expect(() => _validateConfig({ cors: { credentials: true } })).toThrow(
+        "cannot combine credentials: true with wildcard origin",
+      );
       expect(() => _validateConfig({ requestId: false })).toThrow(
         "config.requestId must be an object",
       );

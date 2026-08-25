@@ -1111,9 +1111,10 @@ async shutdown(
 ```
 
 1. **防重复**：内部 `_shuttingDown` 标志防止 SIGTERM + SIGINT 重复触发
-2. **步骤 1**：停止接受新请求 + 等待飞行中请求完成（受 `config.shutdown.timeout` 超时保护）
-3. **步骤 2**：按 LIFO 顺序执行所有 `onClose` 钩子（每个钩子独立 try/catch）
-4. **步骤 3**：退出进程（`_testMode` 或 `skipExit` 时跳过 `process.exit()`）
+2. **步骤 1**：从关闭开始建立 `config.shutdown.timeout` 的单一绝对期限
+3. **步骤 2**：停止接受新请求并等待飞行中请求完成
+4. **步骤 3**：按 LIFO 顺序执行 `onClose`，随后关闭响应缓存、生命周期 hook 与 logger
+5. **步骤 4**：期限到达后仍依次调用尚未启动的清理，但不再无限等待；最后退出进程（`_testMode` 或 `skipExit` 时跳过 `process.exit()`）
 
 ---
 

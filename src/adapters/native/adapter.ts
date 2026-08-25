@@ -339,6 +339,7 @@ export function createNativeAdapter(
       store.routeMethod,
     );
     res._hooks = app.hooks;
+    res._hideInternalErrors = app.config.response?.hideInternalErrors ?? true;
 
     // ── 预组装中间件链（首次请求时构建，后续复用）──────────
     //
@@ -521,6 +522,7 @@ export function createNativeAdapter(
     const req = createVextRequest(nodeReq, app, {}, requestUrl);
     const res = createVextResponse(nodeRes, req, req);
     res._hooks = app.hooks;
+    res._hideInternalErrors = app.config.response?.hideInternalErrors ?? true;
 
     // 内联生成并写出 requestId（notFound 不走中间件链，HEAD 404 也需要响应头）
     if (!req.requestId) {

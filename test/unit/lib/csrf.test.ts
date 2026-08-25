@@ -7,15 +7,17 @@ import type { VextCookieJar } from "../../../src/types/cookies.js";
 import type { VextRequest } from "../../../src/types/request.js";
 import type { VextResponse } from "../../../src/types/response.js";
 
-function createReq(options: {
-  method?: string;
-  headers?: Record<string, string | undefined>;
-  body?: unknown;
-  cookies?: VextCookieJar;
-  session?: Record<string, unknown>;
-  csrf?: VextConfig["csrf"];
-  routeOptions?: RouteOptions;
-} = {}): VextRequest {
+function createReq(
+  options: {
+    method?: string;
+    headers?: Record<string, string | undefined>;
+    body?: unknown;
+    cookies?: VextCookieJar;
+    session?: Record<string, unknown>;
+    csrf?: VextConfig["csrf"];
+    routeOptions?: RouteOptions;
+  } = {},
+): VextRequest {
   const cookies = options.cookies ?? {};
   const headers = options.headers ?? {};
   return {
@@ -291,5 +293,93 @@ describe("csrf middleware", () => {
       expectHttpError(error, "CSRF_ORIGIN_REJECTED");
       return true;
     });
+  });
+
+  it("rejects opaque, malformed, and non-origin Origin headers without falling back to Referer", async () => {
+    const middleware = createCsrfMiddleware({
+      mode: "signed-cookie",
+      secret: "secret",
+      origin: { trustedOrigins: ["http://localhost"] },
+    });
+
+    for (const origin of [
+      "null",
+      "not a url",
+      "https://trusted.example/path",
+    ]) {
+      await expect(
+        middleware(
+          createReq({
+            method: "POST",
+            headers: {
+              origin,
+              referer: "http://localhost/safe",
+            },
+          }),
+          createRes(),
+          vi.fn(),
+        ),
+      ).rejects.toSatisfy((error: unknown) => {
+        expectHttpError(error, "CSRF_ORIGIN_REJECTED");
+        return true;
+      });
+    }
+  });
+
+  it("uses Referer only when Origin is absent", async () => {
+    const middleware = createCsrfMiddleware({
+      mode: "signed-cookie",
+      secret: "secret",
+      origin: { trustedOrigins: [] },
+    });
+
+    await expect(
+      middleware(
+        createReq({
+          method: "POST",
+          headers: {
+            referer: "https://evil.example/form",
+            host: "app.example",
+          },
+        }),
+        createRes(),
+        vi.fn(),
+      ),
+    ).rejects.toSatisfy((error: unknown) => {
+      expectHttpError(error, "CSRF_ORIGIN_REJECTED");
+      return true;
+    });
+  });
+
+  it("normalizes explicitly trusted origins before comparison", async () => {
+    const middleware = createCsrfMiddleware({
+      mode: "signed-cookie",
+      secret: "secret",
+      origin: { trustedOrigins: ["https://TRUSTED.EXAMPLE:443/"] },
+    });
+    const getReq = createReq();
+    const getRes = createRes();
+    await middleware(getReq, getRes, async () => {
+      getReq.csrfToken();
+    });
+    const cookieValue = extractCookieValue(getRes.setCookies[0]!, "vext.csrf");
+    const token = cookieValue.split(".")[0]!;
+    const next = vi.fn();
+
+    await middleware(
+      createReq({
+        method: "POST",
+        cookies: { "vext.csrf": cookieValue },
+        headers: {
+          origin: "https://trusted.example",
+          "x-csrf-token": token,
+          host: "app.example",
+        },
+      }),
+      createRes(),
+      next,
+    );
+
+    expect(next).toHaveBeenCalledOnce();
   });
 });

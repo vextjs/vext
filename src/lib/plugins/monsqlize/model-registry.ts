@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type { VextPluginContext } from "../../../types/plugin.js";
 
 export interface ModelRegistryClass {
@@ -83,10 +84,82 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function isPlainGraphRecord(
+  value: unknown,
+): value is Record<PropertyKey, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function isPlainGraphArray(value: unknown): value is unknown[] {
+  return (
+    Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype
+  );
+}
+
+function isKnownDeepStrictValue(value: object): boolean {
+  return (
+    value instanceof Date ||
+    value instanceof RegExp ||
+    value instanceof Map ||
+    value instanceof Set ||
+    value instanceof ArrayBuffer ||
+    ArrayBuffer.isView(value)
+  );
+}
+
+function enumerableDefinitionKeys(value: object): PropertyKey[] {
+  return Reflect.ownKeys(value).filter((key) => {
+    if (key === "_internalHooks") return false;
+    return Object.getOwnPropertyDescriptor(value, key)?.enumerable === true;
+  });
+}
+
+function matchingDefinitionKeys(
+  left: object,
+  right: object,
+): PropertyKey[] | undefined {
+  const leftKeys = enumerableDefinitionKeys(left);
+  const rightKeys = enumerableDefinitionKeys(right);
+  if (leftKeys.length !== rightKeys.length) return undefined;
+
+  const leftStrings = leftKeys
+    .filter((key): key is string => typeof key === "string")
+    .sort();
+  const rightStrings = rightKeys
+    .filter((key): key is string => typeof key === "string")
+    .sort();
+  if (
+    leftStrings.length !== rightStrings.length ||
+    leftStrings.some((key, index) => key !== rightStrings[index])
+  ) {
+    return undefined;
+  }
+
+  const leftSymbols = leftKeys.filter(
+    (key): key is symbol => typeof key === "symbol",
+  );
+  const rightSymbols = rightKeys.filter(
+    (key): key is symbol => typeof key === "symbol",
+  );
+  if (
+    leftSymbols.length !== rightSymbols.length ||
+    leftSymbols.some((key) => !rightSymbols.includes(key))
+  ) {
+    return undefined;
+  }
+
+  return [...leftStrings, ...leftSymbols];
+}
+
 function definitionsEquivalent(
   left: unknown,
   right: unknown,
-  seen = new WeakMap<object, object>(),
+  leftToRight = new WeakMap<object, object>(),
+  rightToLeft = new WeakMap<object, object>(),
 ): boolean {
   if (Object.is(left, right)) return true;
   if (
@@ -98,24 +171,57 @@ function definitionsEquivalent(
     return false;
   }
 
-  const leftObject = left as Record<string, unknown>;
-  const rightObject = right as Record<string, unknown>;
-  if (seen.get(leftObject) === rightObject) return true;
-  seen.set(leftObject, rightObject);
+  const leftObject = left as object;
+  const rightObject = right as object;
+  if (leftToRight.has(leftObject)) {
+    return leftToRight.get(leftObject) === rightObject;
+  }
+  if (rightToLeft.has(rightObject)) {
+    return rightToLeft.get(rightObject) === leftObject;
+  }
+  leftToRight.set(leftObject, rightObject);
+  rightToLeft.set(rightObject, leftObject);
 
-  const leftKeys = Object.keys(leftObject).filter(
-    (key) => key !== "_internalHooks",
-  );
-  const rightKeys = Object.keys(rightObject).filter(
-    (key) => key !== "_internalHooks",
-  );
-  if (leftKeys.length !== rightKeys.length) return false;
-  leftKeys.sort();
-  rightKeys.sort();
-  for (let index = 0; index < leftKeys.length; index++) {
-    const key = leftKeys[index]!;
-    if (key !== rightKeys[index]) return false;
-    if (!definitionsEquivalent(leftObject[key], rightObject[key], seen)) {
+  const leftIsArray = isPlainGraphArray(leftObject);
+  const rightIsArray = isPlainGraphArray(rightObject);
+  if (leftIsArray || rightIsArray) {
+    if (
+      !leftIsArray ||
+      !rightIsArray ||
+      leftObject.length !== rightObject.length
+    ) {
+      return false;
+    }
+  } else {
+    const leftIsRecord = isPlainGraphRecord(leftObject);
+    const rightIsRecord = isPlainGraphRecord(rightObject);
+    if (!leftIsRecord || !rightIsRecord) {
+      return (
+        isKnownDeepStrictValue(leftObject) &&
+        isKnownDeepStrictValue(rightObject) &&
+        isDeepStrictEqual(leftObject, rightObject)
+      );
+    }
+    if (
+      Object.getPrototypeOf(leftObject) !== Object.getPrototypeOf(rightObject)
+    ) {
+      return false;
+    }
+  }
+
+  const keys = matchingDefinitionKeys(leftObject, rightObject);
+  if (!keys) return false;
+  const leftValues = leftObject as Record<PropertyKey, unknown>;
+  const rightValues = rightObject as Record<PropertyKey, unknown>;
+  for (const key of keys) {
+    if (
+      !definitionsEquivalent(
+        leftValues[key],
+        rightValues[key],
+        leftToRight,
+        rightToLeft,
+      )
+    ) {
       return false;
     }
   }

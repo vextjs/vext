@@ -223,7 +223,7 @@ jobs:
         run: npm run build
 
       - name: Run tests with coverage
-        run: npx vitest run --coverage --coverage.provider=v8 --coverage.reporter=lcov --coverage.reporter=text
+        run: npm run test:cov
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v7

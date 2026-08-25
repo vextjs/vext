@@ -124,6 +124,131 @@ describe("MonSQLize app-owned model registry", () => {
     first.release();
   });
 
+  it("compares built-in values by deep value but unknown classes by identity", () => {
+    class CustomSchemaOption {
+      constructor(readonly version: number) {}
+    }
+
+    const equivalentRegistry = createRegistry();
+    const first = registerModelPlan(equivalentRegistry.ModelClass, app(), [
+      registration("users", "shared:first", {
+        schema: {
+          createdAt: new Date("2026-08-25T00:00:00.000Z"),
+          flags: new Set(["active"]),
+          bytes: new Uint8Array([1, 2, 3]),
+        },
+      }),
+    ]);
+    const second = registerModelPlan(equivalentRegistry.ModelClass, app(), [
+      registration("users", "shared:second", {
+        schema: {
+          createdAt: new Date("2026-08-25T00:00:00.000Z"),
+          flags: new Set(["active"]),
+          bytes: new Uint8Array([1, 2, 3]),
+        },
+      }),
+    ]);
+    second.release();
+    first.release();
+
+    const differentBuiltinRegistry = createRegistry();
+    const builtinOwner = registerModelPlan(
+      differentBuiltinRegistry.ModelClass,
+      app(),
+      [
+        registration("events", "shared:first", {
+          schema: { createdAt: new Date("2026-08-25T00:00:00.000Z") },
+        }),
+      ],
+    );
+    expect(() =>
+      registerModelPlan(differentBuiltinRegistry.ModelClass, app(), [
+        registration("events", "shared:second", {
+          schema: { createdAt: new Date("2026-08-26T00:00:00.000Z") },
+        }),
+      ]),
+    ).toThrow("different definition");
+    builtinOwner.release();
+
+    const customRegistry = createRegistry();
+    const customOwner = registerModelPlan(customRegistry.ModelClass, app(), [
+      registration("custom", "shared:first", {
+        schema: { option: new CustomSchemaOption(1) },
+      }),
+    ]);
+    expect(() =>
+      registerModelPlan(customRegistry.ModelClass, app(), [
+        registration("custom", "shared:second", {
+          schema: { option: new CustomSchemaOption(1) },
+        }),
+      ]),
+    ).toThrow("different definition");
+    customOwner.release();
+  });
+
+  it("ignores _internalHooks while preserving shared-reference topology", () => {
+    const equivalentRegistry = createRegistry();
+    const firstShared: Record<string, unknown> = { version: 1 };
+    const secondShared: Record<string, unknown> = { version: 1 };
+    const first = registerModelPlan(equivalentRegistry.ModelClass, app(), [
+      registration("users", "shared:first", {
+        schema: {
+          primary: firstShared,
+          alias: firstShared,
+          _internalHooks: [() => "first"],
+        },
+      }),
+    ]);
+    const second = registerModelPlan(equivalentRegistry.ModelClass, app(), [
+      registration("users", "shared:second", {
+        schema: {
+          primary: secondShared,
+          alias: secondShared,
+          _internalHooks: [() => "second"],
+        },
+      }),
+    ]);
+    second.release();
+    first.release();
+
+    const divergentRegistry = createRegistry();
+    const shared: Record<string, unknown> = { version: 1 };
+    const owner = registerModelPlan(divergentRegistry.ModelClass, app(), [
+      registration("users", "shared:first", {
+        schema: { primary: shared, alias: shared },
+      }),
+    ]);
+    expect(() =>
+      registerModelPlan(divergentRegistry.ModelClass, app(), [
+        registration("users", "shared:second", {
+          schema: {
+            primary: { version: 1 },
+            alias: { version: 1 },
+          },
+        }),
+      ]),
+    ).toThrow("different definition");
+    owner.release();
+  });
+
+  it("compares cyclic plain graphs with bidirectional node mapping", () => {
+    const registry = createRegistry();
+    const firstCycle: Record<string, unknown> = { version: 1 };
+    firstCycle.self = firstCycle;
+    const secondCycle: Record<string, unknown> = { version: 1 };
+    secondCycle.self = secondCycle;
+
+    const first = registerModelPlan(registry.ModelClass, app(), [
+      registration("cycles", "shared:first", { schema: firstCycle }),
+    ]);
+    const second = registerModelPlan(registry.ModelClass, app(), [
+      registration("cycles", "shared:second", { schema: secondCycle }),
+    ]);
+
+    second.release();
+    first.release();
+  });
+
   it("atomically replaces an owned source and keeps close ownership current", () => {
     const { ModelClass, definitions, redefine } = createRegistry();
     const owner = app();

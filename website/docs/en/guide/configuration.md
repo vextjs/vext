@@ -538,9 +538,9 @@ VextJS has a built-in logger kernel with zero runtime dependency, and the `prett
 
 ### Graceful shutdown configuration (`shutdown`)
 
-| Configuration item | Type     | Default value | Description                                          |
-| ------------------ | -------- | ------------- | ---------------------------------------------------- |
-| `shutdown.timeout` | `number` | `10`          | Shutdown timeout (seconds), force exit after timeout |
+| Configuration item | Type     | Default value | Description                                                                                     |
+| ------------------ | -------- | ------------- | ----------------------------------------------------------------------------------------------- |
+| `shutdown.timeout` | `number` | `10`          | Full-pipeline deadline (seconds); invoke remaining cleanup without further waiting after expiry |
 
 ```typescript
 export default {

@@ -1,5 +1,6 @@
 import type { VextMiddleware } from "../../types/middleware.js";
 import type { RouteOptions, VextCorsConfig } from "../../types/app.js";
+import { assertCorsCredentialPolicy } from "../cors-config.js";
 
 interface ResolvedCorsConfig {
   enabled: boolean;
@@ -28,8 +29,8 @@ interface ResolvedCorsConfig {
  *   - maxAge:      preflight 缓存时间（秒，默认 86400 = 24 小时）
  *
  * Origin 匹配逻辑：
- *   - origins 包含 '*'：直接设置 Access-Control-Allow-Origin: *
- *     （credentials = true 时降级为回显请求 Origin，因为 '*' 与 credentials 不兼容）
+ *   - origins 包含 '*'：直接设置 Access-Control-Allow-Origin: *；与 credentials
+ *     同时启用属于非法配置，会在加载与运行时防御中 fail fast
  *   - origins 为具体域名列表：检查请求 Origin 是否在列表中，
  *     匹配则回显该 Origin，不匹配则不设置 CORS 头（浏览器会拒绝）
  *
@@ -70,18 +71,12 @@ export function createCorsMiddleware(config: VextCorsConfig): VextMiddleware {
     //
     // 规则：
     //   1. 通配符 + 无 credentials → 直接 '*'
-    //   2. 通配符 + credentials   → 回显请求 Origin（'*' 与 credentials 不兼容，RFC 6454）
-    //   3. 具体列表              → 匹配则回显，不匹配则不设置（浏览器会拒绝）
+    //   2. 具体列表              → 匹配则回显，不匹配则不设置（浏览器会拒绝）
     //
     let allowOrigin: string | null = null;
 
     if (effective.isWildcard) {
-      if (effective.credentials && requestOrigin) {
-        // credentials 模式不允许 '*'，回显请求 Origin
-        allowOrigin = requestOrigin;
-      } else {
-        allowOrigin = "*";
-      }
+      allowOrigin = "*";
     } else if (requestOrigin && effective.originsSet!.has(requestOrigin)) {
       allowOrigin = requestOrigin;
     }
@@ -124,6 +119,7 @@ export function createCorsMiddleware(config: VextCorsConfig): VextMiddleware {
 }
 
 function resolveCorsConfig(config: VextCorsConfig): ResolvedCorsConfig {
+  assertCorsCredentialPolicy(config);
   const origins = config.origins ?? ["*"];
   const methods = config.methods ?? [
     "GET",

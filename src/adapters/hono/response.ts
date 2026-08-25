@@ -7,6 +7,7 @@ import type { RouteOptions } from "../../types/app.js";
 import type { VextHeaderValue, VextHeaders } from "../../types/headers.js";
 import {
   beginResponseSend,
+  createStreamFailureBody,
   finishResponseSend,
   finishResponseSendAfterStreamSettlement,
 } from "../../lib/response-hooks.js";
@@ -239,12 +240,8 @@ export function createVextResponse(
       target.destroy(error instanceof Error ? error : undefined);
       return;
     }
-    const body = JSON.stringify({
-      code: 500,
-      message:
-        error instanceof Error && error.message
-          ? error.message
-          : "Stream response failed",
+    const body = createStreamFailureBody(error, {
+      hideInternalErrors: res._hideInternalErrors,
     });
     target.statusCode = 500;
     target.setHeader("Content-Type", "application/json; charset=utf-8");

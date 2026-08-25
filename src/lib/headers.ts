@@ -1,5 +1,6 @@
 import { validateHeaderName, validateHeaderValue } from "node:http";
 import type { VextHeaderValue, VextHeaders } from "../types/headers.js";
+import { defineEnumerableOwn } from "./own-property.js";
 
 export type { VextHeaderValue, VextHeaders } from "../types/headers.js";
 
@@ -45,7 +46,11 @@ export function setHeader(
   if (existing && existing !== name) {
     delete headers[existing];
   }
-  headers[name] = Array.isArray(value) ? [...value] : String(value);
+  defineEnumerableOwn(
+    headers,
+    name,
+    Array.isArray(value) ? [...value] : String(value),
+  );
   return true;
 }
 
@@ -57,14 +62,16 @@ export function appendHeader(
   assertValidHeader(name, value);
   const existing = findHeaderName(headers, name);
   if (!existing) {
-    headers[name] = value;
+    defineEnumerableOwn(headers, name, value);
     return true;
   }
 
   const current = headers[existing];
-  headers[existing] = Array.isArray(current)
-    ? [...current, value]
-    : [String(current), value];
+  defineEnumerableOwn(
+    headers,
+    existing,
+    Array.isArray(current) ? [...current, value] : [String(current), value],
+  );
   return true;
 }
 
@@ -93,7 +100,11 @@ export function replaceHeaders(target: VextHeaders, source: VextHeaders): void {
 export function cloneHeaders(headers: VextHeaders): VextHeaders {
   const cloned: VextHeaders = {};
   for (const [name, value] of Object.entries(headers)) {
-    cloned[name] = Array.isArray(value) ? [...value] : value;
+    defineEnumerableOwn(
+      cloned,
+      name,
+      Array.isArray(value) ? [...value] : value,
+    );
   }
   return cloned;
 }

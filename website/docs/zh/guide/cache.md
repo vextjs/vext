@@ -234,12 +234,12 @@ distributed: {
 
 ### 缓存 Key 算法
 
-默认 key 包含请求方法、路径、排序后的 query、`partitionKey` 和 `vary` 请求头。
+默认 key 是版本化 JSON tuple，包含请求方法、路径、排序后的 query tuple 和规范化的 `vary` 请求头 tuple。tuple 边界可避免分隔符碰撞；`partitionKey` 仍作为底层缓存 key 的额外隔离维度。
 
 ```
-GET /products                              → GET:/products
-GET /products?limit=10&page=2              → GET:/products?limit=10&page=2
-GET /products (Accept-Language: zh-CN)     → GET:/products|accept-language=zh-CN
+GET /products                              → ["v2","GET","/products",[],[]]
+GET /products?limit=10&page=2              → ["v2","GET","/products",[["limit","10"],["page","2"]],[]]
+GET /products (Accept-Language: zh-CN)     → ["v2","GET","/products",[],[["accept-language",["zh-CN"]]]]
 ```
 
 - Query 参数自动排序（`?b=2&a=1` ≡ `?a=1&b=2`）
@@ -275,8 +275,8 @@ app.post("/products", {}, async (req, res) => {
   res.json({ created: true }, 201);
 });
 
-// 删除指定 key
-await app.cache.delete("GET:/products");
+// 删除指定默认 key
+await app.cache.delete('["v2","GET","/products",[],[]]');
 
 // 清空所有缓存
 await app.cache.clear();

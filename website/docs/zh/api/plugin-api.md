@@ -452,41 +452,30 @@ export default defineMiddlewareFactory<ClientCacheOptions>((options) => {
 路由级响应缓存不需要自定义中间件。请直接使用 route options 的 `cache` 字段；其 TTL 配置单位是毫秒。`app.cache` 是响应缓存控制面，只用于 `invalidate()`、`delete()`、`clear()` 和 `stats()`。
 :::
 
-**限速中间件**：
+**限速：使用内建限流器**：
+
+不要在中间件工厂中复制一套永久驻留的进程级 `Map`。应启用 Vext 内建限流，并用路由覆盖表达更严格的配额：
 
 ```typescript
-// src/middlewares/throttle.ts
-import { defineMiddlewareFactory } from "vextjs";
+// src/config/default.ts
+export default {
+  rateLimit: {
+    enabled: true,
+    max: 100,
+    window: 60, // 秒
+    keyBy: "ip",
+  },
+};
 
-interface ThrottleOptions {
-  max: number;
-  window: number; // 秒
-}
-
-export default defineMiddlewareFactory<ThrottleOptions>((options) => {
-  const store = new Map<string, { count: number; resetAt: number }>();
-
-  return async (req, _res, next) => {
-    const key = req.ip;
-    const now = Date.now();
-    const entry = store.get(key);
-
-    if (entry && now < entry.resetAt) {
-      if (entry.count >= options.max) {
-        req.app.throw(429, "请求过于频繁");
-      }
-      entry.count++;
-    } else {
-      store.set(key, {
-        count: 1,
-        resetAt: now + options.window * 1000,
-      });
-    }
-
-    await next();
-  };
-});
+// 单个路由使用更严格的限流；设为 false 可关闭该路由的限流。
+app.post(
+  "/login",
+  { override: { rateLimit: { max: 5, window: 60 } } },
+  handler,
+);
 ```
+
+内建默认存储是单进程的，因此不同 worker 或应用实例会独立计数。若多个进程或主机必须共享同一配额，请通过 `app.setRateLimiter()` 接入 Redis 等共享后端；key 选择、路由覆盖、响应头和 429 处理仍由同一套内建中间件负责。
 
 ---
 

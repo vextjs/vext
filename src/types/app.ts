@@ -149,7 +149,7 @@ export interface RouteCacheOptions {
   /**
    * 自定义 key。
    *
-   * 默认: `${method}:${path}[?sortedQuery][|vary]`
+   * 默认: `JSON.stringify(["v2", method, path, queryTuples, varyTuples])`
    * 字符串适合固定业务缓存名；函数适合按参数、角色等维度生成 key。
    */
   key?: string | ((req: import("./request.js").VextRequest) => string);
@@ -478,7 +478,7 @@ export interface VextLoggerConfig {
  * 优雅关闭配置
  */
 export interface VextShutdownConfig {
-  /** 关闭超时（秒，默认 10） */
+  /** 整个关闭流水线的绝对期限（秒，默认 10） */
   timeout?: number;
 
   /**

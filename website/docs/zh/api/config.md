@@ -450,15 +450,15 @@ fatal > error > warn > info > debug > trace
 
 | 字段           | 类型                                       | 默认值      | 说明                                   |
 | -------------- | ------------------------------------------ | ----------- | -------------------------------------- |
-| `timeout`      | `number`                                   | `10`        | 关闭超时（秒）                         |
+| `timeout`      | `number`                                   | `10`        | 整个关闭流水线的绝对期限（秒）         |
 | `onFatalError` | `(error, origin) => void \| Promise<void>` | `undefined` | 捕获未处理异常后、进程退出前调用的回调 |
 
 收到 `SIGTERM` / `SIGINT` 信号后，框架会：
 
-1. 停止接受新请求
-2. 等待飞行中请求完成（不超过 `timeout` 秒）
-3. 按 LIFO 顺序执行所有 `onClose` 钩子
-4. 退出进程
+1. 从关闭开始建立 `timeout` 的单一绝对期限
+2. 停止接受新请求并等待飞行中请求完成
+3. 按 LIFO 顺序执行 `onClose`，随后关闭响应缓存、生命周期 hook 与 logger
+4. 期限到达后仍调用尚未启动的清理，但不再继续等待，然后退出进程
 
 ```typescript
 export default {

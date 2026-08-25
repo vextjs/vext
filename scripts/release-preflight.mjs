@@ -3,12 +3,14 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { classifyReleaseVersion } from "./release-channel.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const finalMode = process.argv.includes("--final");
 const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
 const failures = [];
 const packageMajor = /^([1-9]\d*)\./u.exec(String(pkg.version))?.[1];
+let releaseMetadata;
 
 function assert(condition, message) {
   if (!condition) failures.push(message);
@@ -18,14 +20,25 @@ function isExactStableVersion(value) {
   return typeof value === "string" && /^\d+\.\d+\.\d+$/.test(value);
 }
 
+try {
+  releaseMetadata = classifyReleaseVersion(pkg.version);
+} catch (error) {
+  failures.push(
+    `package version cannot resolve a release channel: ${
+      error instanceof Error ? error.message : String(error)
+    }`,
+  );
+}
+
 const schemaVersion = pkg.dependencies?.["schema-dsl"];
 const monsqlizeVersion = pkg.dependencies?.monsqlize;
 const files = new Set(pkg.files ?? []);
 let externalArtifactSha256;
 
 assert(
-  pkg.version === "0.3.26" || /^([1-9]|[1-9]\d+)\.\d+\.\d+$/.test(pkg.version),
-  "source must remain 0.3.26 or use a stable v1+ identity",
+  pkg.version === "0.3.26" ||
+    (packageMajor !== undefined && releaseMetadata !== undefined),
+  "source must remain 0.3.26 or use a valid v1+ semantic version",
 );
 assert(
   typeof schemaVersion === "string" &&
@@ -55,8 +68,8 @@ assert(pkg.bin?.vext, "vext CLI bin is missing");
 
 if (finalMode) {
   assert(
-    /^([1-9]|[1-9]\d+)\.\d+\.\d+$/.test(pkg.version),
-    "final publish requires a stable v1+ package version",
+    packageMajor !== undefined && releaseMetadata !== undefined,
+    "final publish requires a valid v1+ stable or prerelease package version",
   );
   assert(
     isExactStableVersion(schemaVersion),
@@ -82,6 +95,19 @@ if (finalMode) {
     assert(
       process.env.GITHUB_REF_NAME === `v${pkg.version}`,
       `GitHub tag ${process.env.GITHUB_REF_NAME ?? "unknown"} must equal v${pkg.version}`,
+    );
+    assert(
+      process.env.VEXT_RELEASE_CHANNEL === releaseMetadata?.releaseChannel,
+      `workflow release channel ${process.env.VEXT_RELEASE_CHANNEL ?? "missing"} must equal ${releaseMetadata?.releaseChannel ?? "invalid"}`,
+    );
+    assert(
+      process.env.VEXT_NPM_DIST_TAG === releaseMetadata?.npmDistTag,
+      `workflow npm dist-tag ${process.env.VEXT_NPM_DIST_TAG ?? "missing"} must equal ${releaseMetadata?.npmDistTag ?? "invalid"}`,
+    );
+    assert(
+      process.env.VEXT_GITHUB_PRERELEASE ===
+        String(releaseMetadata?.githubPrerelease),
+      `workflow GitHub prerelease ${process.env.VEXT_GITHUB_PRERELEASE ?? "missing"} must equal ${String(releaseMetadata?.githubPrerelease)}`,
     );
   } else {
     assert(
@@ -160,6 +186,20 @@ function run(label, command, args, cwd = root, env = {}) {
 
 const npm = "npm";
 const checks = [
+  ...(finalMode
+    ? [
+        [
+          "release version channel",
+          process.execPath,
+          ["scripts/check-version-sync.mjs", "--release"],
+        ],
+        [
+          "release main ancestry",
+          process.execPath,
+          ["scripts/verify-release-ancestry.mjs"],
+        ],
+      ]
+    : []),
   ["changed-file formatting", npm, ["run", "format:check"]],
   ["lint", npm, ["run", "lint"]],
   ["typecheck", npm, ["run", "typecheck"]],

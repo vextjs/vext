@@ -353,6 +353,8 @@ export function createFastifyAdapter(
             method,
           );
           res._hooks = app.hooks;
+          res._hideInternalErrors =
+            app.config.response?.hideInternalErrors ?? true;
 
           // 在 AsyncLocalStorage 请求上下文中执行整个中间件链
           // 确保 app.throw 等内部方法能通过 requestContext.getStore() 访问请求级数据
@@ -441,6 +443,8 @@ export function createFastifyAdapter(
 
           const res = createVextResponse(reply, () => req.requestId, req);
           res._hooks = app.hooks;
+          res._hideInternalErrors =
+            app.config.response?.hideInternalErrors ?? true;
 
           const statusCode = (error as { statusCode?: unknown }).statusCode;
           if (statusCode === 413) {
@@ -495,6 +499,8 @@ export function createFastifyAdapter(
 
           const res = createVextResponse(reply, () => req.requestId, req);
           res._hooks = app.hooks;
+          res._hideInternalErrors =
+            app.config.response?.hideInternalErrors ?? true;
 
           // 🆕 5.7: ALS 可配置跳过
           const runNotFound = async () => {

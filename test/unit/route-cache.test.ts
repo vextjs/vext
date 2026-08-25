@@ -758,7 +758,9 @@ describe("buildRouteCacheMiddleware response-cache-kit delegation", () => {
 describe("defaultCacheKey", () => {
   it("静态路径", () => {
     const req = createMockReq({ method: "GET", path: "/products" });
-    expect(defaultCacheKey(req, [])).toBe("GET:/products");
+    expect(defaultCacheKey(req, [])).toBe(
+      JSON.stringify(["v2", "GET", "/products", [], []]),
+    );
   });
 
   it("动态参数路径（已解析）", () => {
@@ -767,19 +769,34 @@ describe("defaultCacheKey", () => {
       path: "/products/42",
       params: { id: "42" },
     });
-    expect(defaultCacheKey(req, [])).toBe("GET:/products/42");
+    expect(defaultCacheKey(req, [])).toBe(
+      JSON.stringify(["v2", "GET", "/products/42", [], []]),
+    );
   });
 
   it("query 参数排序", () => {
     const req = createMockReq({
       query: { b: "2", a: "1" },
     });
-    expect(defaultCacheKey(req, [])).toBe("GET:/products?a=1&b=2");
+    expect(defaultCacheKey(req, [])).toBe(
+      JSON.stringify([
+        "v2",
+        "GET",
+        "/products",
+        [
+          ["a", "1"],
+          ["b", "2"],
+        ],
+        [],
+      ]),
+    );
   });
 
   it("空 query 无问号", () => {
     const req = createMockReq({ query: {} });
-    expect(defaultCacheKey(req, [])).toBe("GET:/products");
+    expect(defaultCacheKey(req, [])).toBe(
+      JSON.stringify(["v2", "GET", "/products", [], []]),
+    );
   });
 
   it("vary headers", () => {
@@ -787,14 +804,20 @@ describe("defaultCacheKey", () => {
       headers: { "accept-language": "zh-CN" },
     });
     expect(defaultCacheKey(req, ["accept-language"])).toBe(
-      "GET:/products|accept-language=zh-CN",
+      JSON.stringify([
+        "v2",
+        "GET",
+        "/products",
+        [],
+        [["accept-language", ["zh-CN"]]],
+      ]),
     );
   });
 
   it("vary header 不存在时值为空", () => {
     const req = createMockReq({ headers: {} });
     expect(defaultCacheKey(req, ["accept-encoding"])).toBe(
-      "GET:/products|accept-encoding=",
+      JSON.stringify(["v2", "GET", "/products", [], [["accept-encoding", []]]]),
     );
   });
 
@@ -806,13 +829,37 @@ describe("defaultCacheKey", () => {
       headers: { "accept-language": "en" },
     });
     expect(defaultCacheKey(req, ["accept-language"])).toBe(
-      "GET:/api/items?page=1|accept-language=en",
+      JSON.stringify([
+        "v2",
+        "GET",
+        "/api/items",
+        [["page", "1"]],
+        [["accept-language", ["en"]]],
+      ]),
     );
   });
 
   it("POST 方法", () => {
     const req = createMockReq({ method: "POST", path: "/data" });
-    expect(defaultCacheKey(req, [])).toBe("POST:/data");
+    expect(defaultCacheKey(req, [])).toBe(
+      JSON.stringify(["v2", "POST", "/data", [], []]),
+    );
+  });
+
+  it("keeps distinct query and Vary tuples collision-free", () => {
+    const queryA = createMockReq({ query: { a: "1&b=2" } });
+    const queryB = createMockReq({ query: { a: "1", b: "2" } });
+    const varyA = createMockReq({
+      headers: { "x-a": "1|x-b=2", "x-b": "3" },
+    });
+    const varyB = createMockReq({
+      headers: { "x-a": "1", "x-b": "2|x-b=3" },
+    });
+
+    expect(defaultCacheKey(queryA)).not.toBe(defaultCacheKey(queryB));
+    expect(defaultCacheKey(varyA, ["x-a", "x-b"])).not.toBe(
+      defaultCacheKey(varyB, ["x-a", "x-b"]),
+    );
   });
 });
 

@@ -1,7 +1,8 @@
 # ─────────────────────────────────────────────────────────────
 # vextjs Release — Tag Push → Full CI → npm Publish
 #
-# 触发条件：推送 v* 格式的 tag（如 v1.0.0, v0.3.0-beta.1）
+# 触发条件：推送 v* 格式的 tag（如 v2.0.0, v2.1.0-rc.1）
+# stable 版本发布到 npm latest；prerelease 版本发布到 npm next。
 #
 # 流水线结构：
 #   1. CI 验证（typecheck + build + 全量测试）
@@ -162,6 +163,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js 22
         uses: actions/setup-node@v7
@@ -173,42 +176,45 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Resolve release channel
+        id: release-channel
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          node scripts/release-channel.mjs --version "${VERSION}" --github-output "${GITHUB_OUTPUT}"
+
+      - name: Fetch protected main reference
+        run: git fetch --no-tags origin main:refs/remotes/origin/main
+
+      - name: Verify tag commit is contained in origin/main
+        run: npm run verify:release-ancestry
+
       - name: Run final non-publishing preflight
         run: npm run release:preflight:final
+        env:
+          VEXT_RELEASE_CHANNEL: ${{ steps.release-channel.outputs.release_channel }}
+          VEXT_NPM_DIST_TAG: ${{ steps.release-channel.outputs.npm_dist_tag }}
+          VEXT_GITHUB_PRERELEASE: ${{ steps.release-channel.outputs.github_prerelease }}
 
       - name: Publish to npm
         # prepublishOnly runs the same final preflight for manual publishes. CI
         # has just executed it explicitly, so ignore lifecycle scripts here to
         # avoid running the full suite twice for the identical checkout.
-        run: npm publish --ignore-scripts --provenance --access public
+        run: npm publish --ignore-scripts --provenance --access public --tag "${{ steps.release-channel.outputs.npm_dist_tag }}"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Extract version
-        id: version
-        run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-
-          # 判断是否为预发布版本
-          if [[ "${VERSION}" == *"-"* ]]; then
-            echo "prerelease=true" >> $GITHUB_OUTPUT
-          else
-            echo "prerelease=false" >> $GITHUB_OUTPUT
-          fi
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: v${{ steps.version.outputs.version }}
-          prerelease: ${{ steps.version.outputs.prerelease == 'true' }}
+          name: v${{ steps.release-channel.outputs.version }}
+          prerelease: ${{ steps.release-channel.outputs.github_prerelease == 'true' }}
           generate_release_notes: true
           body: |
-            ## 📦 vextjs v${{ steps.version.outputs.version }}
+            ## 📦 vextjs v${{ steps.release-channel.outputs.version }}
 
             ```bash
-            npm install vextjs@${{ steps.version.outputs.version }}
+            npm install vextjs@${{ steps.release-channel.outputs.version }}
             ```
 
             See the full changelog below.

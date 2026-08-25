@@ -99,6 +99,7 @@ interface FetchClientContext {
   clientId: string;
   parentClientId?: string;
   baseURL?: string;
+  defaultHeaders?: RequestInit["headers"];
 }
 
 /**
@@ -371,6 +372,170 @@ function normalizeFetchRetryDelay(
   return normalizeFetchRetryDelayValue(value, name);
 }
 
+interface NormalizedOutboundRequest {
+  request: Request;
+  nativeInit: RequestInit;
+  url: string;
+  method: string;
+  headers: Headers;
+  callerSignal: AbortSignal;
+}
+
+function toNativeRequestInit(init: VextFetchInit | undefined): RequestInit {
+  if (!init) return {};
+  const nativeInit = { ...init } as Record<string, unknown>;
+  delete nativeInit.timeout;
+  delete nativeInit.retry;
+  delete nativeInit.retryDelay;
+  delete nativeInit.propagateRequestId;
+  delete nativeInit.propagateHeaders;
+  return nativeInit as RequestInit;
+}
+
+function normalizeOutboundRequest(
+  input: string | URL | Request,
+  init: VextFetchInit | undefined,
+  defaultHeaders: RequestInit["headers"] | undefined,
+): NormalizedOutboundRequest {
+  const nativeInit = toNativeRequestInit(init);
+  const request = new Request(input, nativeInit);
+  const headers = new Headers(defaultHeaders);
+  for (const [name, value] of request.headers) {
+    headers.set(name, value);
+  }
+
+  return {
+    request,
+    nativeInit,
+    url: request.url,
+    method: request.method.toUpperCase(),
+    headers,
+    callerSignal: request.signal,
+  };
+}
+
+function createJsonRequestInit(
+  method: "POST" | "PUT" | "PATCH",
+  body: unknown,
+  init: VextFetchInit | undefined,
+): VextFetchInit {
+  const headers = new Headers(init?.headers);
+  if (body != null && !headers.has("content-type")) {
+    headers.set("content-type", "application/json");
+  }
+  return {
+    ...init,
+    method,
+    body: body != null ? JSON.stringify(body) : undefined,
+    headers,
+  };
+}
+
+interface AttemptLease {
+  signal: AbortSignal;
+  didTimeout(): boolean;
+  dispose(): void;
+}
+
+function createAttemptLease(
+  parentSignal: AbortSignal,
+  timeout: number,
+  timeoutReason: Error,
+): AttemptLease {
+  const controller = new AbortController();
+  let timedOut = false;
+  let disposed = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const onParentAbort = () => {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+    controller.abort(parentSignal.reason);
+  };
+
+  if (parentSignal.aborted) {
+    onParentAbort();
+  } else {
+    parentSignal.addEventListener("abort", onParentAbort, { once: true });
+    timer = setTimeout(() => {
+      timer = undefined;
+      if (controller.signal.aborted) return;
+      timedOut = true;
+      controller.abort(timeoutReason);
+    }, timeout);
+    timer.unref?.();
+  }
+
+  return {
+    signal: controller.signal,
+    didTimeout: () => timedOut,
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+      parentSignal.removeEventListener("abort", onParentAbort);
+    },
+  };
+}
+
+function isReplayableBodyValue(body: unknown): boolean {
+  if (body === undefined || body === null) return true;
+  if (typeof body === "string") return true;
+  if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) return true;
+  if (body instanceof URLSearchParams) return true;
+  if (typeof Blob !== "undefined" && body instanceof Blob) return true;
+  if (typeof FormData !== "undefined" && body instanceof FormData) return true;
+  return false;
+}
+
+function isReplayableOutboundRequest(
+  input: string | URL | Request,
+  request: Request,
+  nativeInit: RequestInit,
+): boolean {
+  if (!request.body) return true;
+  if (input instanceof Request && nativeInit.body === undefined) return false;
+  return isReplayableBodyValue(nativeInit.body);
+}
+
+function cancelResponseBody(response: Response): void {
+  try {
+    const cancellation = response.body?.cancel();
+    void cancellation?.catch(() => {
+      // Best-effort resource cleanup must not hide the retry outcome.
+    });
+  } catch {
+    // Best-effort resource cleanup must not hide the retry outcome.
+  }
+}
+
+function toError(reason: unknown): Error {
+  return reason instanceof Error ? reason : new Error(String(reason));
+}
+
+function sleepWithSignal(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      cleanup();
+      reject(signal.reason);
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 // ── 核心实现 ────────────────────────────────────────────────
 
 /**
@@ -417,13 +582,13 @@ export function createVextFetch(
     input: string | URL | Request,
     init?: VextFetchInit,
   ): Promise<Response> {
-    const url =
-      typeof input === "string"
-        ? input
-        : input instanceof URL
-          ? input.href
-          : input.url;
-    const method = (init?.method ?? "GET").toUpperCase();
+    const normalized = normalizeOutboundRequest(
+      input,
+      init,
+      context.defaultHeaders,
+    );
+    const { request, nativeInit, url, method, headers, callerSignal } =
+      normalized;
     const timeout =
       init?.timeout === undefined
         ? globalTimeout
@@ -431,8 +596,6 @@ export function createVextFetch(
     const propagate = init?.propagateRequestId !== false;
 
     // ── 1. 构建请求头（注入追踪头）────────────────────────
-    const headers = new Headers(init?.headers);
-
     const store = requestContext.getStore();
 
     // ── 1a. 注入 requestId（受 propagateRequestId 控制）──
@@ -463,13 +626,33 @@ export function createVextFetch(
       init?.retry === undefined
         ? globalRetry
         : normalizeFetchRetry(init.retry, "init.retry");
-    const maxRetries = IDEMPOTENT_METHODS.has(method) ? configuredRetries : 0;
+    const replayableBody = isReplayableOutboundRequest(
+      input,
+      request,
+      nativeInit,
+    );
+    const maxRetries =
+      IDEMPOTENT_METHODS.has(method) && replayableBody ? configuredRetries : 0;
     const retryDelay =
       init?.retryDelay === undefined
         ? globalRetryDelay
         : normalizeFetchRetryDelay(init.retryDelay, "init.retryDelay");
     const requestId = store?.requestId;
     const operationId = nextOutboundId("fetch");
+    const emitFetchError = async (reason: unknown, attempt: number) => {
+      await hooks?.emitSafe("fetch:error", {
+        url,
+        method,
+        error: toError(reason),
+        requestId,
+        operationId,
+        clientId: context.clientId,
+        parentClientId: context.parentClientId,
+        baseURL: context.baseURL,
+        attempt,
+        maxRetries,
+      });
+    };
 
     await hooks?.emit("fetch:before", {
       url,
@@ -493,7 +676,12 @@ export function createVextFetch(
       if (attempt > 0) {
         const delay =
           typeof retryDelay === "function" ? retryDelay(attempt) : retryDelay;
-        await sleep(delay);
+        try {
+          await sleepWithSignal(delay, callerSignal);
+        } catch (reason) {
+          await emitFetchError(reason, attempt);
+          throw reason;
+        }
 
         logger.debug(
           {
@@ -508,23 +696,26 @@ export function createVextFetch(
       }
 
       // ── 超时控制 ──────────────────────────────────────
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeout);
-
-      // 合并用户 signal 和超时 signal
-      const signal = mergeSignals(init?.signal ?? null, controller.signal);
+      const timeoutError = new Error(
+        `[app.fetch] ${method} ${url} timed out after ${timeout}ms`,
+      );
+      timeoutError.name = "TimeoutError";
+      const lease = createAttemptLease(callerSignal, timeout, timeoutError);
 
       const startTime = performance.now();
 
       try {
-        const response = await fetch(input, {
-          ...init,
-          method,
-          headers,
-          signal,
-        });
+        const response = await fetch(
+          input instanceof Request ? request : input,
+          {
+            ...nativeInit,
+            method,
+            headers,
+            signal: lease.signal,
+          },
+        );
 
-        clearTimeout(timer);
+        lease.dispose();
 
         const duration = Math.round(performance.now() - startTime);
 
@@ -570,6 +761,7 @@ export function createVextFetch(
           lastError = new Error(
             `[app.fetch] ${method} ${url} returned ${response.status}`,
           );
+          cancelResponseBody(response);
           continue;
         }
 
@@ -589,12 +781,12 @@ export function createVextFetch(
         });
         return response;
       } catch (err: unknown) {
-        clearTimeout(timer);
-
+        const timedOut = lease.didTimeout();
+        lease.dispose();
         const duration = Math.round(performance.now() - startTime);
-        const error = err instanceof Error ? err : new Error(String(err));
+        const error = toError(err);
 
-        if (error.name === "AbortError") {
+        if (timedOut) {
           logger.error(
             {
               type: "outbound",
@@ -608,23 +800,26 @@ export function createVextFetch(
             `→ ${method} ${url} TIMEOUT ${duration}ms (limit: ${timeout}ms)`,
           );
 
-          // 超时不重试
-          const timeoutError = new Error(
-            `[app.fetch] ${method} ${url} timed out after ${timeout}ms`,
-          );
-          await hooks?.emitSafe("fetch:error", {
-            url,
-            method,
-            error: timeoutError,
-            requestId,
-            operationId,
-            clientId: context.clientId,
-            parentClientId: context.parentClientId,
-            baseURL: context.baseURL,
-            attempt,
-            maxRetries,
-          });
+          await emitFetchError(timeoutError, attempt);
           throw timeoutError;
+        }
+
+        if (callerSignal.aborted) {
+          const reason = callerSignal.reason;
+          const callerError = toError(reason);
+          logger.debug(
+            {
+              type: "outbound",
+              method,
+              url,
+              error: callerError.message,
+              duration,
+              requestId: requestContext.getStore()?.requestId,
+            },
+            `→ ${method} ${url} ABORTED ${duration}ms`,
+          );
+          await emitFetchError(reason, attempt);
+          throw reason;
         }
 
         logger.error(
@@ -646,18 +841,7 @@ export function createVextFetch(
           continue;
         }
 
-        await hooks?.emitSafe("fetch:error", {
-          url,
-          method,
-          error,
-          requestId,
-          operationId,
-          clientId: context.clientId,
-          parentClientId: context.parentClientId,
-          baseURL: context.baseURL,
-          attempt,
-          maxRetries,
-        });
+        await emitFetchError(error, attempt);
         throw error;
       }
     }
@@ -686,37 +870,13 @@ export function createVextFetch(
     vextFetch(url, { ...init, method: "GET" });
 
   vextFetch.post = (url: string, body?: unknown, init?: VextFetchInit) =>
-    vextFetch(url, {
-      ...init,
-      method: "POST",
-      body: body != null ? JSON.stringify(body) : undefined,
-      headers: {
-        ...(body != null ? { "content-type": "application/json" } : {}),
-        ...(init?.headers as Record<string, string> | undefined),
-      },
-    });
+    vextFetch(url, createJsonRequestInit("POST", body, init));
 
   vextFetch.put = (url: string, body?: unknown, init?: VextFetchInit) =>
-    vextFetch(url, {
-      ...init,
-      method: "PUT",
-      body: body != null ? JSON.stringify(body) : undefined,
-      headers: {
-        ...(body != null ? { "content-type": "application/json" } : {}),
-        ...(init?.headers as Record<string, string> | undefined),
-      },
-    });
+    vextFetch(url, createJsonRequestInit("PUT", body, init));
 
   vextFetch.patch = (url: string, body?: unknown, init?: VextFetchInit) =>
-    vextFetch(url, {
-      ...init,
-      method: "PATCH",
-      body: body != null ? JSON.stringify(body) : undefined,
-      headers: {
-        ...(body != null ? { "content-type": "application/json" } : {}),
-        ...(init?.headers as Record<string, string> | undefined),
-      },
-    });
+    vextFetch(url, createJsonRequestInit("PATCH", body, init));
 
   vextFetch.delete = (url: string, init?: VextFetchInit) =>
     vextFetch(url, { ...init, method: "DELETE" });
@@ -751,11 +911,9 @@ export function createVextFetch(
         clientId: nextOutboundId("fetch-client"),
         parentClientId: context.clientId,
         baseURL,
+        defaultHeaders: options.headers,
       },
     );
-
-    // 包装：自动拼接 baseURL + 合并默认 headers
-    const defaultHeaders = options.headers ?? {};
 
     const wrappedFetch: VextFetchClient = ((
       input: string | URL | Request,
@@ -766,13 +924,7 @@ export function createVextFetch(
           ? `${baseURL}${input.startsWith("/") ? "" : "/"}${input}`
           : input;
 
-      return child(resolvedInput, {
-        ...init,
-        headers: {
-          ...defaultHeaders,
-          ...(init?.headers as Record<string, string> | undefined),
-        },
-      });
+      return child(resolvedInput, init);
     }) as VextFetchClient;
 
     // 快捷方法也拼接 baseURL
@@ -780,37 +932,13 @@ export function createVextFetch(
       wrappedFetch(url, { ...init, method: "GET" });
 
     wrappedFetch.post = (url: string, body?: unknown, init?: VextFetchInit) =>
-      wrappedFetch(url, {
-        ...init,
-        method: "POST",
-        body: body != null ? JSON.stringify(body) : undefined,
-        headers: {
-          ...(body != null ? { "content-type": "application/json" } : {}),
-          ...(init?.headers as Record<string, string> | undefined),
-        },
-      });
+      wrappedFetch(url, createJsonRequestInit("POST", body, init));
 
     wrappedFetch.put = (url: string, body?: unknown, init?: VextFetchInit) =>
-      wrappedFetch(url, {
-        ...init,
-        method: "PUT",
-        body: body != null ? JSON.stringify(body) : undefined,
-        headers: {
-          ...(body != null ? { "content-type": "application/json" } : {}),
-          ...(init?.headers as Record<string, string> | undefined),
-        },
-      });
+      wrappedFetch(url, createJsonRequestInit("PUT", body, init));
 
     wrappedFetch.patch = (url: string, body?: unknown, init?: VextFetchInit) =>
-      wrappedFetch(url, {
-        ...init,
-        method: "PATCH",
-        body: body != null ? JSON.stringify(body) : undefined,
-        headers: {
-          ...(body != null ? { "content-type": "application/json" } : {}),
-          ...(init?.headers as Record<string, string> | undefined),
-        },
-      });
+      wrappedFetch(url, createJsonRequestInit("PATCH", body, init));
 
     wrappedFetch.delete = (url: string, init?: VextFetchInit) =>
       wrappedFetch(url, { ...init, method: "DELETE" });
@@ -864,6 +992,7 @@ interface ProxyFetchResult {
   attempt: number;
   maxRetries: number;
   durationMs: number;
+  lease: AttemptLease;
 }
 
 class ProxyLocalError extends Error {
@@ -986,7 +1115,12 @@ async function handleProxyRequest(
       maxRetries: result.maxRetries,
       durationMs: result.durationMs,
     });
-    await writeProxyResponse(result.response, res);
+    try {
+      writeProxyResponse(result.response, res, result.lease);
+    } catch (error) {
+      result.lease.dispose();
+      throw error;
+    }
   } catch (err) {
     const proxyTarget = resolved?.targetName ?? target?.name;
     const proxyError = err instanceof Error ? err : new Error(String(err));
@@ -1303,17 +1437,7 @@ function normalizeProxyRetryDelay(
 }
 
 function isReplayableProxyBody(body: ProxyRequestBody | undefined): boolean {
-  if (body === undefined || body === null) return true;
-  if (typeof body === "string") return true;
-  if (body instanceof Uint8Array) return true;
-  if (body instanceof URLSearchParams) return true;
-  if (typeof FormData !== "undefined" && body instanceof FormData) {
-    return true;
-  }
-  if (typeof Blob !== "undefined" && body instanceof Blob) {
-    return true;
-  }
-  return false;
+  return isReplayableBodyValue(body);
 }
 
 function proxyMaxRetries(resolved: ResolvedProxyRequest): number {
@@ -1329,26 +1453,30 @@ async function fetchProxyWithRetry(
 ): Promise<ProxyFetchResult> {
   const retryableMethod = IDEMPOTENT_METHODS.has(resolved.method);
   const maxRetries = proxyMaxRetries(resolved);
-  let clientAborted = false;
-  let currentController: AbortController | null = null;
+  const clientController = new AbortController();
 
   req.onClose(() => {
-    clientAborted = true;
-    currentController?.abort();
+    if (!clientController.signal.aborted) {
+      clientController.abort(new ProxyClientAbortError());
+    }
   });
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     if (attempt > 0) {
-      if (clientAborted) {
+      if (clientController.signal.aborted) {
         throw new ProxyClientAbortError();
       }
       const delay =
         typeof resolved.retryDelay === "function"
           ? resolved.retryDelay(attempt)
           : resolved.retryDelay;
-      await sleep(delay);
-      if (clientAborted) {
-        throw new ProxyClientAbortError();
+      try {
+        await sleepWithSignal(delay, clientController.signal);
+      } catch (reason) {
+        if (clientController.signal.aborted) {
+          throw new ProxyClientAbortError();
+        }
+        throw reason;
       }
       runtime.logger.debug(
         {
@@ -1364,17 +1492,19 @@ async function fetchProxyWithRetry(
       );
     }
 
-    if (clientAborted) {
+    if (clientController.signal.aborted) {
       throw new ProxyClientAbortError();
     }
 
-    let timedOut = false;
-    const controller = new AbortController();
-    currentController = controller;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, resolved.timeout);
+    const timeoutError = new ProxyTimeoutError(
+      `[app.fetch.proxy] ${resolved.method} ${resolved.url} timed out after ${resolved.timeout}ms.`,
+      resolved.timeout,
+    );
+    const lease = createAttemptLease(
+      clientController.signal,
+      resolved.timeout,
+      timeoutError,
+    );
 
     const startTime = performance.now();
 
@@ -1383,9 +1513,9 @@ async function fetchProxyWithRetry(
         method: resolved.method,
         headers: resolved.headers,
         body: resolved.body,
-        signal: controller.signal,
+        signal: lease.signal,
+        redirect: "manual",
       });
-      clearTimeout(timer);
 
       const duration = Math.round(performance.now() - startTime);
       const level = response.ok
@@ -1412,37 +1542,24 @@ async function fetchProxyWithRetry(
         resolved.replayableBody &&
         attempt < maxRetries
       ) {
-        try {
-          await response.body?.cancel();
-        } catch {
-          // best-effort cleanup only
-        }
-        if (currentController === controller) {
-          currentController = null;
-        }
+        cancelResponseBody(response);
+        lease.dispose();
         continue;
       }
 
-      // Keep the controller attached after headers arrive so req.onClose()
-      // can still abort an in-flight streamed response body.
-      return { response, attempt, maxRetries, durationMs: duration };
+      // The lease remains active until writeProxyResponse observes source
+      // stream settlement, so timeout/client-close still cover the body phase.
+      return { response, attempt, maxRetries, durationMs: duration, lease };
     } catch (err) {
-      clearTimeout(timer);
-      if (currentController === controller) {
-        currentController = null;
-      }
+      const timedOut = lease.didTimeout();
+      lease.dispose();
 
-      const error = err instanceof Error ? err : new Error(String(err));
-      if (isAbortError(error)) {
-        if (clientAborted) {
-          throw new ProxyClientAbortError();
-        }
-        if (timedOut) {
-          throw new ProxyTimeoutError(
-            `[app.fetch.proxy] ${resolved.method} ${resolved.url} timed out after ${resolved.timeout}ms.`,
-            resolved.timeout,
-          );
-        }
+      const error = toError(err);
+      if (clientController.signal.aborted) {
+        throw new ProxyClientAbortError();
+      }
+      if (timedOut) {
+        throw timeoutError;
       }
 
       runtime.logger.error(
@@ -1470,48 +1587,67 @@ async function fetchProxyWithRetry(
   );
 }
 
-async function writeProxyResponse(
+function writeProxyResponse(
   response: Response,
   res: VextResponse,
-): Promise<void> {
+  lease: AttemptLease,
+): void {
   const contentType = response.headers.get("content-type") ?? undefined;
-  const isJson =
-    contentType?.includes("application/json") === true ||
-    contentType?.includes("+json") === true;
-  const isText = contentType?.startsWith("text/") === true;
 
   res.status(response.status);
 
   if (BODYLESS_STATUS.has(response.status)) {
-    copyProxyResponseHeaders(response, res, false);
+    copyProxyResponseHeaders(response, res);
+    lease.dispose();
     res.text("", response.status);
     return;
   }
 
-  if (isJson || isText || !response.body) {
-    const body = await response.text();
-    copyProxyResponseHeaders(response, res, false);
-    res.text(body, response.status);
+  copyProxyResponseHeaders(response, res);
+  if (!response.body) {
+    lease.dispose();
+    res.text("", response.status);
     return;
   }
 
-  copyProxyResponseHeaders(response, res, true);
   const stream = Readable.fromWeb(response.body as ReadableStream<Uint8Array>);
-  res.stream(stream, contentType ?? "application/octet-stream");
+  bindLeaseToProxyStream(stream, lease);
+  try {
+    res.stream(stream, contentType ?? "application/octet-stream");
+  } catch (error) {
+    lease.dispose();
+    stream.destroy(toError(error));
+    throw error;
+  }
 }
 
-function copyProxyResponseHeaders(
-  response: Response,
-  res: VextResponse,
-  keepContentEncoding: boolean,
-): void {
+function copyProxyResponseHeaders(response: Response, res: VextResponse): void {
   response.headers.forEach((value, key) => {
     const lower = key.toLowerCase();
     if (HOP_BY_HOP_HEADERS.has(lower)) return;
     if (lower === "content-length") return;
-    if (!keepContentEncoding && lower === "content-encoding") return;
+    if (lower === "content-encoding" || lower === "set-cookie") return;
     res.setHeader(key, value);
   });
+  const setCookies = (
+    response.headers as Headers & { getSetCookie?: () => string[] }
+  ).getSetCookie?.();
+  if (setCookies && setCookies.length > 0) {
+    res.setHeader("Set-Cookie", setCookies);
+  }
+}
+
+function bindLeaseToProxyStream(stream: Readable, lease: AttemptLease): void {
+  let settled = false;
+  const settle = () => {
+    if (settled) return;
+    settled = true;
+    lease.dispose();
+  };
+  stream.once("end", settle);
+  stream.once("close", settle);
+  stream.once("error", settle);
+  if (stream.readableEnded || stream.destroyed) queueMicrotask(settle);
 }
 
 function writeProxyLocalError(
@@ -1529,60 +1665,4 @@ function writeProxyLocalError(
     },
     status,
   );
-}
-
-function isAbortError(error: Error): boolean {
-  return error.name === "AbortError";
-}
-
-// ── 辅助函数 ────────────────────────────────────────────────
-
-/**
- * 合并两个 AbortSignal
- *
- * 任意一个 signal 触发 abort 时，返回的 signal 也触发 abort。
- * 如果 userSignal 为 null，直接返回 timeoutSignal。
- *
- * 优先使用运行时原生 AbortSignal.any()，并保留轻量 fallback。
- *
- * @param userSignal    用户传入的 signal（可为 null）
- * @param timeoutSignal 超时控制的 signal
- * @returns 合并后的 AbortSignal
- */
-function mergeSignals(
-  userSignal: AbortSignal | null,
-  timeoutSignal: AbortSignal,
-): AbortSignal {
-  if (!userSignal) return timeoutSignal;
-
-  // 尝试使用原生 AbortSignal.any()（Node.js 20+）
-  if (typeof AbortSignal.any === "function") {
-    return AbortSignal.any([userSignal, timeoutSignal]);
-  }
-
-  // Fallback implementation for runtimes without AbortSignal.any().
-  const controller = new AbortController();
-
-  const onAbort = () => {
-    controller.abort();
-  };
-
-  if (userSignal.aborted || timeoutSignal.aborted) {
-    controller.abort();
-    return controller.signal;
-  }
-
-  userSignal.addEventListener("abort", onAbort, { once: true });
-  timeoutSignal.addEventListener("abort", onAbort, { once: true });
-
-  return controller.signal;
-}
-
-/**
- * sleep — 延迟指定毫秒
- *
- * @param ms 毫秒数
- */
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

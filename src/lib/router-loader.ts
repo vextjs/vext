@@ -1,6 +1,6 @@
 import { readdir, stat } from "node:fs/promises";
 import { join, relative, extname, sep } from "node:path";
-import type { VextApp, RouteOptions } from "../types/app.js";
+import type { VextApp, RouteOptions, VextCorsConfig } from "../types/app.js";
 import type { VextHandler, VextMiddleware } from "../types/middleware.js";
 import type { RouteDefinition } from "../types/route.js";
 import { executeRouteFactory } from "./define-routes.js";
@@ -34,6 +34,7 @@ import {
   createCanonicalRouteIdentity,
   normalizeRegisteredRoutePath,
 } from "./route-contract.js";
+import { assertCorsCredentialPolicy } from "./cors-config.js";
 
 /**
  * router-loader.ts — 路由自动加载器（Phase 1 升级版）
@@ -396,6 +397,16 @@ function prepareRouteDefinitionRegistrations(
     // ── 1. 拼接完整路径 ──────────────────────────────────
     const fullPath = normalizeRegisteredRoutePath(prefix, route.path);
     const routeOptions = route.options ?? {};
+    const routeCorsOverride = routeOptions.override?.cors;
+    if (routeCorsOverride) {
+      assertCorsCredentialPolicy(
+        {
+          ...(app.config.cors ?? {}),
+          ...routeCorsOverride,
+        } as VextCorsConfig,
+        `route ${route.method.toUpperCase()} "${fullPath}" options.override.cors`,
+      );
+    }
     prepareRouteResponseSerializers(routeOptions, {
       method: route.method,
       path: fullPath,

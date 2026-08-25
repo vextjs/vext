@@ -101,6 +101,123 @@ describe("session middleware", () => {
     expect(secondRes.setCookies).toEqual([]);
   });
 
+  it("detects nested mutations without recursively proxying session values", async () => {
+    const set = vi.fn();
+    const store = {
+      get: vi.fn(() => ({ profile: { displayName: "before" } })),
+      set,
+      delete: vi.fn(),
+    };
+    const middleware = session({ store, ttl: 60 });
+    const req = createReq({ "vext.sid": "existing" });
+
+    await middleware(req, createRes(), async () => {
+      const profile = req.session!.profile as { displayName: string };
+      profile.displayName = "after";
+    });
+
+    expect(set).toHaveBeenCalledWith(
+      "existing",
+      { profile: { displayName: "after" } },
+      60,
+    );
+  });
+
+  it("does not mutate a custom store snapshot before the session is committed", async () => {
+    const stored = { profile: { displayName: "before" } };
+    const set = vi.fn();
+    const store = {
+      get: vi.fn(() => stored),
+      set,
+      delete: vi.fn(),
+    };
+    const middleware = session({ store, ttl: 60 });
+    const req = createReq({ "vext.sid": "existing" });
+
+    await middleware(req, createRes(), async () => {
+      const profile = req.session!.profile as { displayName: string };
+      profile.displayName = "after";
+      expect(stored.profile.displayName).toBe("before");
+    });
+
+    expect(set).toHaveBeenCalledWith(
+      "existing",
+      { profile: { displayName: "after" } },
+      60,
+    );
+  });
+
+  it("detects nested mutations before an immediate response send", async () => {
+    const set = vi.fn();
+    const store = {
+      get: vi.fn(() => ({ cart: { quantity: 1 } })),
+      set,
+      delete: vi.fn(),
+    };
+    const middleware = session({ store, ttl: 60 });
+    const req = createReq({ "vext.sid": "existing" });
+    const res = createRes();
+    res.json = vi.fn((data: unknown, status = 200) => {
+      res._onBeforeSend?.("json", data, status, {});
+    });
+
+    await middleware(req, res, async () => {
+      const cart = req.session!.cart as { quantity: number };
+      cart.quantity = 2;
+      res.json({ ok: true });
+    });
+
+    expect(set).toHaveBeenCalledWith("existing", { cart: { quantity: 2 } }, 60);
+  });
+
+  it("refreshes its snapshot after save and persists later nested changes", async () => {
+    const set = vi.fn();
+    const store = {
+      get: vi.fn(() => ({ preferences: { theme: "light" } })),
+      set,
+      delete: vi.fn(),
+    };
+    const middleware = session({ store, ttl: 60 });
+    const req = createReq({ "vext.sid": "existing" });
+
+    await middleware(req, createRes(), async () => {
+      const preferences = req.session!.preferences as { theme: string };
+      preferences.theme = "dark";
+      await req.session!.save();
+      preferences.theme = "contrast";
+    });
+
+    expect(set).toHaveBeenCalledTimes(2);
+    expect(set).toHaveBeenNthCalledWith(
+      1,
+      "existing",
+      { preferences: { theme: "dark" } },
+      60,
+    );
+    expect(set).toHaveBeenNthCalledWith(
+      2,
+      "existing",
+      { preferences: { theme: "contrast" } },
+      60,
+    );
+  });
+
+  it("conservatively persists sessions whose snapshot cannot be cloned", async () => {
+    const handler = () => "not structured-cloneable";
+    const set = vi.fn();
+    const store = {
+      get: vi.fn(() => ({ handler })),
+      set,
+      delete: vi.fn(),
+    };
+    const middleware = session({ store, ttl: 60 });
+    const req = createReq({ "vext.sid": "existing" });
+
+    await middleware(req, createRes(), async () => {});
+
+    expect(set).toHaveBeenCalledWith("existing", { handler }, 60);
+  });
+
   it("persists sessions through the cache session store adapter", async () => {
     const entries = new Map<string, { value: unknown; ttlMs?: number }>();
     const cache = {

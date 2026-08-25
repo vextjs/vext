@@ -57,6 +57,16 @@ export default defineConfig({
 
       // 不在未覆盖的文件上标红（避免干扰）
       all: true,
+
+      // Node 22 发布候选基线的整数下界。阈值只允许显式上调；
+      // autoUpdate 必须关闭，避免测试运行自行改写质量门禁。
+      thresholds: {
+        lines: 79,
+        statements: 78,
+        functions: 81,
+        branches: 70,
+        autoUpdate: false,
+      },
     },
   },
 });

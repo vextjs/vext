@@ -166,6 +166,47 @@ describe("response hook lifecycle helpers", () => {
     );
   });
 
+  it("hides stream failure details by default and exposes them only when configured", async () => {
+    const secretError = new Error("database password=super-secret");
+
+    for (const [hideInternalErrors, expectedMessage] of [
+      [true, "Internal Server Error"],
+      [false, secretError.message],
+    ] as const) {
+      const readable = new EventEmitter() as NodeJS.ReadableStream;
+      let written = "";
+      const target = Object.assign(new EventEmitter(), {
+        headersSent: false,
+        writableEnded: false,
+        destroyed: false,
+        statusCode: 200,
+        setHeader: vi.fn(),
+        end: vi.fn((chunk?: string) => {
+          written = chunk ?? "";
+        }),
+        destroy: vi.fn(),
+      });
+      const res = { _hideInternalErrors: hideInternalErrors } as VextResponse;
+      const state = beginResponseSend(res, {
+        kind: "stream",
+        status: 200,
+        headers: {},
+        wrapped: false,
+        requestId: "req-secret",
+      });
+
+      finishResponseSendAfterStreamSettlement(res, state, readable, target);
+      readable.emit("error", secretError);
+      await waitForResponseSend(res);
+
+      expect(JSON.parse(written)).toEqual({
+        code: 500,
+        message: expectedMessage,
+        requestId: "req-secret",
+      });
+    }
+  });
+
   it("does not forward readable errors into assigned response sockets", async () => {
     const hooks = createHookManager();
     const after = vi.fn();
@@ -215,5 +256,39 @@ describe("response hook lifecycle helpers", () => {
 
     reqSocket.destroy();
     resSocket.destroy();
+  });
+
+  it("continues observing source errors after the response target closes first", async () => {
+    const res = {} as VextResponse;
+    const readable = Object.assign(new EventEmitter(), {
+      destroyed: false,
+      readableEnded: false,
+      destroy: vi.fn(),
+    }) as unknown as NodeJS.ReadableStream;
+    const target = Object.assign(new EventEmitter(), {
+      destroyed: false,
+      writableEnded: false,
+    });
+    const state = beginResponseSend(res, {
+      kind: "stream",
+      status: 200,
+      headers: {},
+      wrapped: false,
+      requestId: "req-late-error",
+    });
+
+    finishResponseSendAfterStreamSettlement(res, state, readable, target);
+    target.emit("close");
+    await waitForResponseSend(res);
+
+    expect(
+      (readable as unknown as EventEmitter).listenerCount("error"),
+    ).toBeGreaterThan(0);
+    expect(() =>
+      (readable as unknown as EventEmitter).emit(
+        "error",
+        new Error("late source failure"),
+      ),
+    ).not.toThrow();
   });
 });

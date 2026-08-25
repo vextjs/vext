@@ -26,6 +26,28 @@ function createRes(): VextResponse & { headers: Record<string, string> } {
 }
 
 describe("CORS route overrides", () => {
+  it("rejects wildcard origins combined with credentials at runtime creation", () => {
+    expect(() =>
+      createCorsMiddleware({ origins: ["*"], credentials: true }),
+    ).toThrow("cannot combine credentials: true with wildcard origin");
+  });
+
+  it("defensively rejects an invalid route override", async () => {
+    const middleware = createCorsMiddleware({
+      enabled: true,
+      origins: ["https://global.example"],
+      credentials: false,
+    });
+
+    await expect(
+      middleware(
+        createReq({ origins: ["*"], credentials: true }),
+        createRes(),
+        vi.fn(),
+      ),
+    ).rejects.toThrow("cannot combine credentials: true with wildcard origin");
+  });
+
   it("overrides the global origin policy for one route", async () => {
     const middleware = createCorsMiddleware({
       enabled: true,

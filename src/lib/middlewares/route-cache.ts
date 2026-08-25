@@ -83,7 +83,7 @@ export function normalizeCacheOptions(
 /**
  * 默认缓存 key 生成
  *
- * 格式: `${method}:${path}[?${sortedQuery}][|${varyValues}]`
+ * 格式: `JSON.stringify(["v2", method, path, queryTuples, varyTuples])`
  *
  * 设计原则:
  *   1. method + path 天然区分不同路由和动态参数
@@ -92,31 +92,43 @@ export function normalizeCacheOptions(
  *   3. vary headers 区分同路径不同语言/编码
  *   4. 不含 auth/cookie → 安全默认
  *
- * 示例:
- *   GET /products               → 'GET:/products'
- *   GET /products?limit=10&page=2 → 'GET:/products?limit=10&page=2'
- *   GET /products + zh-CN         → 'GET:/products|accept-language=zh-CN'
+ * v2 tuple keeps names, values, and multi-value boundaries distinct while
+ * isolating entries from the legacy delimiter-based key space.
  */
 export function defaultCacheKey(
   req: VextRequest,
   vary: string[] | "*" = [],
 ): string {
-  let key = `${req.method}:${req.path}`;
-
-  const queryKeys = Object.keys(req.query);
-  if (queryKeys.length > 0) {
-    queryKeys.sort();
-    key += "?" + queryKeys.map((k) => `${k}=${req.query[k]}`).join("&");
+  const queryTuples = Object.keys(req.query)
+    .sort()
+    .map((name) => [name, req.query[name] ?? ""] as const);
+  const varyNames = [
+    ...new Set(
+      (vary === "*" ? Object.keys(req.headers) : vary).map((name) =>
+        name.toLowerCase(),
+      ),
+    ),
+  ].sort();
+  const normalizedHeaders = new Map<string, string[]>();
+  for (const [rawName, rawValue] of Object.entries(req.headers)) {
+    const values = Array.isArray(rawValue)
+      ? rawValue.map(String)
+      : rawValue === undefined
+        ? []
+        : [String(rawValue)];
+    normalizedHeaders.set(rawName.toLowerCase(), values);
   }
+  const varyTuples = varyNames.map(
+    (name) => [name, normalizedHeaders.get(name) ?? []] as const,
+  );
 
-  const varyHeaders = vary === "*" ? Object.keys(req.headers).sort() : vary;
-  if (varyHeaders.length > 0) {
-    for (const h of varyHeaders) {
-      key += `|${h}=${req.headers[h.toLowerCase()] ?? ""}`;
-    }
-  }
-
-  return key;
+  return JSON.stringify([
+    "v2",
+    req.method.toUpperCase(),
+    req.path,
+    queryTuples,
+    varyTuples,
+  ]);
 }
 
 // ── buildRouteCacheMiddleware ──────────────────────────────────

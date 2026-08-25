@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type { VextMiddleware } from "../types/middleware.js";
 import type { VextRequest } from "../types/request.js";
 import type { VextResponse } from "../types/response.js";
@@ -187,6 +188,8 @@ interface SessionState {
   saved: boolean;
   clearWritten: boolean;
   target: Record<string, unknown>;
+  snapshot?: VextSessionData;
+  conservativeDirty: boolean;
   pendingCommit?: Promise<void>;
   proxy?: VextSession;
 }
@@ -401,6 +404,11 @@ async function createSessionState(
   if (incomingId) {
     const stored = await config.store.get(incomingId);
     if (stored) {
+      const captured = captureSessionSnapshot(stored);
+      const target =
+        captured.snapshot === undefined
+          ? { ...stored }
+          : structuredClone(captured.snapshot);
       return {
         id: incomingId,
         isNew: false,
@@ -408,11 +416,15 @@ async function createSessionState(
         dirty: false,
         saved: false,
         clearWritten: false,
-        target: { ...stored },
+        target,
+        snapshot: captured.snapshot,
+        conservativeDirty: captured.conservativeDirty,
       };
     }
   }
 
+  const target: Record<string, unknown> = {};
+  const captured = captureSessionSnapshot(target);
   return {
     id: generateSessionId(config.idLength),
     isNew: true,
@@ -420,7 +432,9 @@ async function createSessionState(
     dirty: false,
     saved: false,
     clearWritten: false,
-    target: {},
+    target,
+    snapshot: captured.snapshot,
+    conservativeDirty: captured.conservativeDirty,
   };
 }
 
@@ -518,6 +532,8 @@ async function commitSession(
     return;
   }
 
+  reconcileSessionDirtyState(state);
+
   if (state.saved && !state.dirty) {
     return;
   }
@@ -527,16 +543,19 @@ async function commitSession(
   }
 
   const data = extractSessionData(state.target);
+  const captured = captureSessionSnapshot(data);
+  const storeData = createSessionStorePayload(data, captured);
   if (!state.dirty && options.force && !state.isNew && config.store.touch) {
     await config.store.touch(state.id, config.ttl);
   } else {
-    await config.store.set(state.id, data, config.ttl);
+    await config.store.set(state.id, storeData, config.ttl);
   }
 
   writeSessionCookie(req, res, config, state);
   state.isNew = false;
   state.dirty = false;
   state.saved = true;
+  applySessionSnapshot(state, captured);
 }
 
 function commitSessionForSend(
@@ -551,6 +570,8 @@ function commitSessionForSend(
     return;
   }
 
+  reconcileSessionDirtyState(state);
+
   if (state.saved && !state.dirty) {
     return;
   }
@@ -560,18 +581,21 @@ function commitSessionForSend(
   }
 
   const data = extractSessionData(state.target);
+  const captured = captureSessionSnapshot(data);
+  const storeData = createSessionStorePayload(data, captured);
   res._sessionCommitPending = true;
   state.pendingCommit = Promise.resolve()
     .then(() =>
       !state.dirty && options.force && !state.isNew && config.store.touch
         ? config.store.touch(state.id, config.ttl)
-        : config.store.set(state.id, data, config.ttl),
+        : config.store.set(state.id, storeData, config.ttl),
     )
     .then(() => {
       writeSessionCookie(req, res, config, state, options.headers);
       state.isNew = false;
       state.dirty = false;
       state.saved = true;
+      applySessionSnapshot(state, captured);
     })
     .finally(() => {
       res._sessionCommitPending = false;
@@ -585,6 +609,7 @@ function commitSessionForSend(
 
 function shouldCommitSession(state: SessionState, force: boolean): boolean {
   if (state.destroyed) return false;
+  reconcileSessionDirtyState(state);
   if (state.saved && !state.dirty) return false;
   return state.dirty || force;
 }
@@ -595,6 +620,58 @@ function extractSessionData(target: Record<string, unknown>): VextSessionData {
     if (!RESERVED_SESSION_KEYS.has(key)) data[key] = value;
   }
   return data;
+}
+
+interface SessionSnapshotCapture {
+  snapshot?: VextSessionData;
+  conservativeDirty: boolean;
+}
+
+function captureSessionSnapshot(data: VextSessionData): SessionSnapshotCapture {
+  try {
+    return {
+      snapshot: structuredClone(data),
+      conservativeDirty: false,
+    };
+  } catch {
+    return { snapshot: undefined, conservativeDirty: true };
+  }
+}
+
+function applySessionSnapshot(
+  state: SessionState,
+  captured: SessionSnapshotCapture,
+): void {
+  state.snapshot = captured.snapshot;
+  state.conservativeDirty = captured.conservativeDirty;
+}
+
+function createSessionStorePayload(
+  data: VextSessionData,
+  captured: SessionSnapshotCapture,
+): VextSessionData {
+  return captured.snapshot === undefined
+    ? data
+    : structuredClone(captured.snapshot);
+}
+
+function reconcileSessionDirtyState(state: SessionState): void {
+  if (state.destroyed || state.dirty) return;
+  if (state.conservativeDirty || state.snapshot === undefined) {
+    state.dirty = true;
+    state.saved = false;
+    return;
+  }
+
+  try {
+    if (isDeepStrictEqual(extractSessionData(state.target), state.snapshot)) {
+      return;
+    }
+  } catch {
+    state.conservativeDirty = true;
+  }
+  state.dirty = true;
+  state.saved = false;
 }
 
 function writeClearCookie(

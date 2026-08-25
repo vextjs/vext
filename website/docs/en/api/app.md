@@ -1116,9 +1116,10 @@ async shutdown(
 ```
 
 1. **Anti-duplication**: The internal `_shuttingDown` flag prevents SIGTERM + SIGINT from being triggered repeatedly
-2. **Step 1**: Stop accepting new requests + wait for in-flight requests to complete (protected by `config.shutdown.timeout` timeout)
-3. **Step 2**: Execute all `onClose` hooks in LIFO order (each hook has an independent try/catch)
-4. **Step 3**: Exit the process (skip `process.exit()` when using `_testMode` or `skipExit`)
+2. **Step 1**: Establish one absolute `config.shutdown.timeout` deadline when shutdown starts
+3. **Step 2**: Stop accepting new requests and wait for in-flight requests to complete
+4. **Step 3**: Run `onClose` in LIFO order, then close the response cache, lifecycle hooks, and logger
+5. **Step 4**: After the deadline, still invoke cleanup that has not started but do not wait indefinitely; finally exit the process (skip `process.exit()` with `_testMode` or `skipExit`)
 
 ---
 

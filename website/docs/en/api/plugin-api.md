@@ -452,41 +452,35 @@ export default defineMiddlewareFactory<ClientCacheOptions>((options) => {
 Route-level response caching does not require custom middleware. Please use the `cache` field of route options directly; its TTL configuration unit is milliseconds. `app.cache` is the response cache control surface and is only used by `invalidate()`, `delete()`, `clear()` and `stats()`.
 :::
 
-**Speed limiting middleware**:
+**Rate limiting: use the built-in limiter**:
+
+Do not copy a permanent process-level `Map` into a middleware factory. Enable
+Vext's built-in limiter globally and use the route override for narrower limits:
 
 ```typescript
-// src/middlewares/throttle.ts
-import { defineMiddlewareFactory } from "vextjs";
+// src/config/default.ts
+export default {
+  rateLimit: {
+    enabled: true,
+    max: 100,
+    window: 60, // seconds
+    keyBy: "ip",
+  },
+};
 
-interface ThrottleOptions {
-  max: number;
-  window: number; // seconds
-}
-
-export default defineMiddlewareFactory<ThrottleOptions>((options) => {
-  const store = new Map<string, { count: number; resetAt: number }>();
-
-  return async (req, _res, next) => {
-    const key = req.ip;
-    const now = Date.now();
-    const entry = store.get(key);
-
-    if (entry && now < entry.resetAt) {
-      if (entry.count >= options.max) {
-        req.app.throw(429, "The request is too frequent");
-      }
-      entry.count++;
-    } else {
-      store.set(key, {
-        count: 1,
-        resetAt: now + options.window * 1000,
-      });
-    }
-
-    await next();
-  };
-});
+// A stricter limit for one route; false disables it for a route.
+app.post(
+  "/login",
+  { override: { rateLimit: { max: 5, window: 60 } } },
+  handler,
+);
 ```
+
+The default built-in store is process-local, so workers and application
+instances count independently. For one quota shared across processes or hosts,
+install a Redis or other shared backend through `app.setRateLimiter()`; the
+built-in middleware keeps key selection, route overrides, headers, and 429
+handling in one place.
 
 ---
 

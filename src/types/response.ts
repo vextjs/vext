@@ -350,6 +350,9 @@ export interface VextResponse {
    */
   _hooks?: import("./hooks.js").VextHooks;
 
+  /** Resolved response error-disclosure policy injected by the adapter. @internal */
+  _hideInternalErrors?: boolean;
+
   /**
    * 发送 HTML 响应（内部方法）
    *

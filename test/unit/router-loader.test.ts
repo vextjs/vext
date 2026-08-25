@@ -1279,6 +1279,34 @@ export default "not a route definition";
   // ── 路由级运行时能力 ─────────────────────────────────────
 
   describe("route runtime options", () => {
+    it("rejects wildcard credentials during route preparation", async () => {
+      const routesDir = join(tmpDir, "routes");
+      await writeRouteFile(
+        routesDir,
+        "invalid-cors.mjs",
+        makeRouteFileContent([
+          {
+            method: "get",
+            path: "/invalid",
+            options:
+              "{ override: { cors: { enabled: true, origins: ['*'], credentials: true } } }",
+          },
+        ]),
+      );
+
+      const app = createMockApp();
+      await expect(
+        loadRoutes(app, routesDir, {
+          middlewareDefs: {},
+          globalMiddlewares: [],
+          corsMiddleware: async (_req, _res, next) => next(),
+        }),
+      ).rejects.toThrow(
+        "cannot combine credentials: true with wildcard origin",
+      );
+      expect(app.mockAdapter.registeredRoutes).toHaveLength(0);
+    });
+
     it("injects timeout, CORS, and Session middleware for route opt-in", async () => {
       const routesDir = join(tmpDir, "routes");
       await writeRouteFile(

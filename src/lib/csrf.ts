@@ -25,7 +25,12 @@ const SESSION_TOKEN_KEY = "__vext_csrf";
 const DEFAULT_CSRF_CONFIG: Required<
   Pick<
     VextCsrfConfig,
-    "enabled" | "mode" | "methods" | "headerNames" | "bodyField" | "fetchMetadata"
+    | "enabled"
+    | "mode"
+    | "methods"
+    | "headerNames"
+    | "bodyField"
+    | "fetchMetadata"
   >
 > & {
   cookie: Required<Pick<VextCsrfCookieConfig, "name" | "path" | "httpOnly">> &
@@ -179,12 +184,27 @@ function assertFetchMetadata(
 function assertOrigin(req: VextRequest, config: ResolvedCsrfConfig): void {
   if (config.origin === false) return;
 
-  const candidate =
-    parseOrigin(req.headers.origin) ?? parseOrigin(req.headers.referer);
-  if (!candidate) return;
+  let candidate: string | undefined;
+  if (Object.hasOwn(req.headers, "origin")) {
+    candidate = parseSerializedOrigin(req.headers.origin);
+    if (!candidate) {
+      throwCsrfError("CSRF_ORIGIN_REJECTED", "CSRF origin rejected");
+    }
+  } else if (Object.hasOwn(req.headers, "referer")) {
+    candidate = parseRefererOrigin(req.headers.referer);
+    if (!candidate) {
+      throwCsrfError("CSRF_ORIGIN_REJECTED", "CSRF origin rejected");
+    }
+  } else {
+    return;
+  }
 
-  const requestOrigin = getRequestOrigin(req);
-  const trusted = new Set(config.origin.trustedOrigins ?? []);
+  const requestOrigin = parseSerializedOrigin(getRequestOrigin(req));
+  const trusted = new Set<string>();
+  for (const configuredOrigin of config.origin.trustedOrigins ?? []) {
+    const normalized = parseSerializedOrigin(configuredOrigin);
+    if (normalized) trusted.add(normalized);
+  }
   if (candidate !== requestOrigin && !trusted.has(candidate)) {
     throwCsrfError("CSRF_ORIGIN_REJECTED", "CSRF origin rejected");
   }
@@ -267,10 +287,7 @@ function ensureSignedCookieToken(
   const { name, secure, ...cookieOptions } = config.cookie;
   res.cookie(name, `${token}.${signature}`, {
     ...cookieOptions,
-    secure:
-      secure === "auto"
-        ? req.protocol === "https"
-        : secure,
+    secure: secure === "auto" ? req.protocol === "https" : secure,
   });
   return token;
 }
@@ -336,10 +353,42 @@ function getRequestOrigin(req: VextRequest): string {
   return `${req.protocol}://${host}`;
 }
 
-function parseOrigin(value: string | undefined): string | undefined {
-  if (!value) return undefined;
+function parseSerializedOrigin(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length === 0 || value === "null") {
+    return undefined;
+  }
   try {
-    return new URL(value).origin;
+    const url = new URL(value);
+    if (
+      (url.protocol !== "http:" && url.protocol !== "https:") ||
+      url.origin === "null" ||
+      url.username !== "" ||
+      url.password !== "" ||
+      url.pathname !== "/" ||
+      url.search !== "" ||
+      url.hash !== ""
+    ) {
+      return undefined;
+    }
+    return url.origin;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseRefererOrigin(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length === 0) return undefined;
+  try {
+    const url = new URL(value);
+    if (
+      (url.protocol !== "http:" && url.protocol !== "https:") ||
+      url.origin === "null" ||
+      url.username !== "" ||
+      url.password !== ""
+    ) {
+      return undefined;
+    }
+    return url.origin;
   } catch {
     return undefined;
   }

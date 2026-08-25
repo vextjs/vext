@@ -98,6 +98,7 @@ export {
   type VextFrontendFreshnessKey,
   type VextFrontendFreshnessReadResult,
   type VextFrontendFreshnessResponse,
+  type VextFrontendFreshnessStoreOptions,
   type VextFrontendFreshnessWriteInput,
 } from "./runtime/freshness.js";
 export {

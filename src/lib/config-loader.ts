@@ -23,7 +23,11 @@
 
 import path from "node:path";
 import { existsSync } from "node:fs";
-import type { VextConfig, VextMiddlewareConfig } from "../types/app.js";
+import type {
+  VextConfig,
+  VextCorsConfig,
+  VextMiddlewareConfig,
+} from "../types/app.js";
 import { DEFAULT_CONFIG } from "./app.js";
 import {
   BUILT_IN_ADAPTER_NAMES,
@@ -40,6 +44,7 @@ import {
   type RuntimeMode,
 } from "./config-profile.js";
 import { importUserModule } from "./user-module-loader.js";
+import { assertCorsCredentialPolicy } from "./cors-config.js";
 
 // ── 常量 ────────────────────────────────────────────────────
 
@@ -966,6 +971,7 @@ function validateCorsConfig(value: unknown, pathName: string): void {
       `[vextjs] ${pathName}.maxAge must be a finite non-negative number.`,
     );
   }
+  assertCorsCredentialPolicy(value as VextCorsConfig, pathName);
 }
 
 function validateRequestIdConfig(value: unknown, pathName: string): void {
