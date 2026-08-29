@@ -30,12 +30,10 @@ my-app/
 │   │
 │   ├── config/                # 配置文件（必须）
 │   │   ├── default.ts         # 默认配置（必须存在）
-│   │   ├── bootstrap.ts       # 启动期 provider（可选）
-│   │   ├── bootstrap.example.ts # 脚手架生成的 provider 示例
+│   │   ├── bootstrap.ts       # 可跟踪的启动期入口；默认 providers: []
 │   │   ├── development.ts     # 开发环境覆盖（可选）
 │   │   ├── production.ts      # 生产环境覆盖（可选）
-│   │   ├── local.ts           # 本地覆盖，不提交到 Git（可选）
-│   │   └── local.example.ts   # 脚手架生成的本地覆盖示例
+│   │   └── local.ts           # 生成的空本地覆盖；被 Git 忽略
 │   │
 │   ├── preload/               # 可选项目级 preload 源；需要时再创建
 │   │   └── 01-otel.ts         # 进程启动前执行
@@ -56,6 +54,13 @@ my-app/
 │   │   └── payment/
 │   │       └── stripe.ts      # → app.services.payment.stripe
 │   │
+│   ├── constants/             # 共享运行时值；有真实消费者时再创建
+│   │   └── services/
+│   │       └── order-status.ts # service 消费者共享的运行时常量
+│   │
+│   ├── utils/                 # 无状态公共函数；普通 import，不自动扫描
+│   │   └── format-date.ts
+│   │
 │   ├── middlewares/            # 中间件定义（约定式，自动扫描）
 │   │   ├── auth.ts            # → 通过 name 'auth' 引用
 │   │   └── check-role.ts      # → 通过 name 'check-role' 引用
@@ -73,6 +78,9 @@ my-app/
 │       │   └── greeting.d.ts  # 前后端安全共享契约示例
 │       ├── frontend/
 │       │   └── home.d.ts      # 仅前端声明示例
+│       ├── server/
+│       │   └── services/
+│       │       └── order.ts   # 后端消费者共享的 type-only 契约
 │       └── generated/         # 仅由 vext typegen 管理
 │           └── index.d.ts     # typegen 后生成；脚手架初始为 .gitkeep
 │
@@ -97,22 +105,20 @@ my-app/
 框架内置默认值 → default.ts → {profile}.ts → local.ts → bootstrap provider patch → CLI override
 ```
 
-| 文件                   | 用途                                                     | 是否必须 |
-| ---------------------- | -------------------------------------------------------- | -------- |
-| `default.ts`           | 所有 profile 的基础配置                                  | ✅ 必须  |
-| `bootstrap.ts`         | 启动期远程配置 provider 注册入口                         | 可选     |
-| `bootstrap.example.ts` | 脚手架生成的 provider 示例，复制为 `bootstrap.ts` 后启用 | 示例     |
-| `development.ts`       | 开发默认 profile 覆盖                                    | 可选     |
-| `production.ts`        | 生产默认 profile 覆盖                                    | 可选     |
-| `test.ts`              | 测试默认 profile 覆盖                                    | 可选     |
-| `sg-sit.ts`            | 自定义 profile 覆盖                                      | 可选     |
-| `local.ts`             | 本地开发覆盖（应加入 `.gitignore`）                      | 可选     |
-| `local.example.ts`     | 脚手架生成的本地覆盖示例，复制为 `local.ts` 后启用       | 示例     |
+| 文件             | 用途                                                         | 是否必须 |
+| ---------------- | ------------------------------------------------------------ | -------- |
+| `default.ts`     | 所有 profile 的基础配置                                      | ✅ 必须  |
+| `bootstrap.ts`   | 可跟踪的启动期 provider 入口；脚手架默认生成 `providers: []` | 可选     |
+| `development.ts` | 开发默认 profile 覆盖                                        | 可选     |
+| `production.ts`  | 生产默认 profile 覆盖                                        | 可选     |
+| `test.ts`        | 测试默认 profile 覆盖                                        | 可选     |
+| `sg-sit.ts`      | 自定义 profile 覆盖                                          | 可选     |
+| `local.ts`       | 创建时生成的空本地覆盖；脚手架 `.gitignore` 默认排除该文件   | 可选     |
 
 配置 profile 可通过 `vext start --config <name>` 或 `VEXT_CONFIG=<name>` 选择。例如 `vext start --config sg-sit` 时加载 `sg-sit.ts`。
 
 :::info 脚手架约定
-`vext create` 默认生成 `local.example.ts` / `bootstrap.example.ts`，而不是直接生成 `local.ts` / `bootstrap.ts`。这样既能告诉用户约定路径，也能避免把本地覆盖或远程配置入口误提交到仓库。
+`vext create` 会直接生成零副作用的 `local.ts` 与 `bootstrap.ts`：前者是空 `VextConfigOverride`，后者是 `providers: []`。脚手架 `.gitignore` 会排除 `local.ts`，因此 fresh clone 中可以没有它，build/start 也不得依赖它存在；`bootstrap.ts` 正常跟踪。
 :::
 
 ```typescript
@@ -207,7 +213,13 @@ src/types/
 TypeScript API-only 模板没有前端消费者，因此只创建
 `src/types/generated/`；JavaScript 模板不创建 `src/types/`。Vext 不预建
 `src/types/server/`：后端专属类型优先与 route、service、plugin 或 Model 就近放置，
-等确实出现后端跨模块共享契约时，项目可自行增加 server 目录。
+等确实出现后端跨模块共享契约时，项目可自行增加 server 目录。多个后端 service
+消费者共享的 type-only 契约放在 `src/types/server/services/<domain>.ts`；需要与
+浏览器共享的 DTO 放在 `src/types/shared/<domain>.ts`。
+
+TypeScript runtime enum、class、symbol、带初始化的常量及其他运行时值不能放进
+`src/types/**`。只有一个 owner 时就近放置；多个 service 共享时提升到
+`src/constants/services/<domain>.ts`。
 
 该变化只影响新脚手架。现有项目不会被移动、重命名或删除，`vext typegen` 也仍然
 只管理 `src/types/generated/`。前后端运行配置继续统一放在 `src/config/`，不能放进
@@ -292,6 +304,20 @@ export default defineRoutes((app) => {
 
 文件名自动从 `kebab-case` 转换为 `camelCase`。子目录会映射为嵌套对象。
 
+#### Service 辅助代码的所有权
+
+| 内容                                            | 推荐位置                                         |
+| ----------------------------------------------- | ------------------------------------------------ |
+| 单个 service 私有的 type/interface              | service 同文件或领域 owner 附近的 type-only 文件 |
+| 多个后端 service 共享的 type-only 契约          | `src/types/server/services/<domain>.ts`          |
+| 服务端与浏览器共享的 DTO                        | `src/types/shared/<domain>.ts`                   |
+| 单个领域私有的运行时 enum/constant              | 该领域 owner 附近                                |
+| 多个 service 或跨模块共享的运行时 enum/constant | `src/constants/services/<domain>.ts`             |
+
+不要把辅助文件放在 `src/services/_types` 或 `src/services/_enums`。runtime、
+typegen、Code Docs 与 reload 工具的消费者并不完全相同；把非 service owner 放在
+扫描目录之外，边界才是显式且一致的。
+
 #### 服务类写法
 
 ```typescript
@@ -328,6 +354,17 @@ export default class UserService {
 
 推荐做法：在构造函数中只保存 `app` 引用，在方法中按需访问其他 service（延迟访问）。
 :::
+
+### `src/utils/` — 公共函数
+
+`src/utils/` 只放无状态、可复用且边界清晰的 helper，例如格式转换、纯计算或稳定
+解析。通过普通 `import` 使用；Vext 不会自动扫描、实例化 `src/utils/`，也不会把它
+注入 `app`。
+
+只有一个领域消费者时，helper 应与领域 owner 就近放置；出现真实跨领域复用后再
+提升到 `src/utils/`。依赖 `VextApp`、数据库、请求上下文或可变领域状态的逻辑，应
+留在 service、plugin 或 route 附近。前端会导入的 helper 必须 browser-safe，不能
+从前端入口暴露 Node-only 工具。
 
 ### `src/middlewares/` — 中间件目录
 

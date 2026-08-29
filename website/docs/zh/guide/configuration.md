@@ -10,7 +10,7 @@ VextJS 采用 **多层配置合并** 机制，支持按环境覆盖配置，同�
 框架内置默认值 → default.ts → {configProfile}.ts → local.ts → bootstrap provider patch → CLI override
 ```
 
-每一层都可以只声明需要覆盖的字段，未声明的字段从上一层继承。
+运行时合并允许后层只声明需要覆盖的字段。TypeScript 则有意区分项目基础配置与后层 patch：`default.ts` 使用 `VextUserConfig`，环境 profile 与 local 配置文件使用 `VextConfigOverride`，`createTestApp()` 采用同一覆盖合同。bootstrap provider 继续使用 JSON-like `Record<string, unknown>` patch，并由现有运行时校验。
 
 ### 配置文件
 
@@ -59,6 +59,14 @@ Vext 就会按同一套合并链路加载：`default -> sg-sit -> local -> boots
 - **其他数组**：后层覆盖前层
 - **`bootstrap provider patch`**：在 `local.ts` 之后、CLI override 之前参与同一套 merge / validate / freeze 流程
 - **最终结果**：深冻结（`deepFreeze`），运行时不可修改
+
+### TypeScript 基础配置与覆盖层
+
+- **基础配置（`default.ts`）**：使用 `VextUserConfig`。它的顶层字段可选，但一旦写出某个嵌套对象，该对象不会自动变成深度可选。例如 `default.ts` 中的 `database` 必须满足完整 `MonSQLizeDatabaseConfig`，包括必填的连接 `config`。
+- **覆盖层**：`development.ts`、`production.ts`、自定义 profile 与 `local.ts` 使用 `VextConfigOverride`。它与运行时深度合并一致，后层可以只 patch `database.findLimit` 或 `logger.level`，其余字段从完整 base 继承。
+- **原子能力**：adapter、store、callback、数组以及注册为 runtime capability 的路径仍要求完整值，不会被递归放宽。
+
+不要把一个必填的基础对象拆到多个文件，并期待 TypeScript 等后续合并再补齐。即使 `development.ts` 会提供 `uri`，`default.ts` 中的半截 `database` 仍然无效；应先在 base 提供完整连接，再由后层只覆盖环境差异。参见[数据库配置](./database#多环境配置)。
 
 ### Bootstrap Config Provider
 
@@ -115,7 +123,9 @@ provider 上下文字段：
 
 ```typescript
 // src/config/default.ts
-export default {
+import type { VextUserConfig } from "vextjs";
+
+const config: VextUserConfig = {
   port: 3000,
   host: "0.0.0.0",
   logger: {
@@ -146,11 +156,15 @@ export default {
     preset: "basic",
   },
 };
+
+export default config;
 ```
 
 ```typescript
 // src/config/production.ts — 仅覆盖需要变更的字段
-export default {
+import type { VextConfigOverride } from "vextjs";
+
+const config: VextConfigOverride = {
   logger: {
     level: "warn", // 生产环境减少日志输出
   },
@@ -161,13 +175,19 @@ export default {
     enabled: false, // 生产环境关闭文档
   },
 };
+
+export default config;
 ```
 
 ```typescript
 // src/config/local.ts — 本地开发特殊配置（不提交 Git）
-export default {
+import type { VextConfigOverride } from "vextjs";
+
+const config: VextConfigOverride = {
   port: 8080, // 本地使用其他端口
 };
+
+export default config;
 ```
 
 `config.session.enabled: true` 会在生产、开发、测试和软重载链路中自动注册 Session，应用配置默认值为 `false`。内置 memory store 适合单进程部署；共享部署应把 `createCacheSessionStore(cacheLike)` 或自定义 `VextSessionStore` 设置到 `config.session.store`。路由可通过 `session: false` 跳过，也可在全局关闭时通过 `session: true` 单独启用。显式 `session()` 中间件仍保留给作用域化或手动注册场景。
@@ -995,6 +1015,11 @@ declare module "vextjs" {
 ## 环境变量
 
 除了配置文件，部分设置也可以通过环境变量控制：
+
+VextJS 不会自动解析 `.env` 文件。`process.env` 中可见的值，必须已由操作系统、
+shell、进程管理器、容器/CI 平台、密钥系统或应用显式拥有的 loader 注入。Vext
+配置 profile 由 `--config` 或 `VEXT_CONFIG` 选择；`.env` 文件不是另一个内建的
+Vext profile 层。
 
 | 环境变量               | 说明                                                   |
 | ---------------------- | ------------------------------------------------------ |

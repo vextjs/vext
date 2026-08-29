@@ -233,43 +233,104 @@ Use `uri` as the Redis cache connection field. `url` is kept only as a compatibi
 
 ### Multiple environment configuration
 
-Use VextJS's three-tier configuration merging mechanism to configure different databases for different environments:
+Runtime deep merge supports environment-specific database patches, but the TypeScript files have different responsibilities. `default.ts` is the complete base and uses `VextUserConfig`; profile files are later patches and use `VextConfigOverride`.
+
+:::warning Do not split a half database across layers
+Do not put only `findLimit` / `models` in `default.ts` and leave the required `config.uri` for `development.ts`. The `database` object written in `default.ts` must satisfy `MonSQLizeDatabaseConfig` by itself; TypeScript does not postpone that check until runtime merging. Put a complete connection in the base, then override only environment differences later.
+:::
+
+There are two sound layouts. Either keep one complete `database` in
+`default.ts` and use `VextConfigOverride` for partial profile differences, as
+below, or omit `database` entirely from `default.ts` and make every profile that
+enables it supply a complete `MonSQLizeDatabaseConfig`. In the second layout,
+validate the profile's database value against `MonSQLizeDatabaseConfig`; do not
+use the looser override type to hide a missing connection when no earlier
+database layer exists.
+
+#### Layout A — complete database in the base
 
 ```typescript
-// src/config/default.ts — basic configuration
-export default {
+// src/config/default.ts — complete base
+import type { VextUserConfig } from "vextjs";
+
+const config: VextUserConfig = {
   database: {
     config: { uri: "mongodb://localhost:27017/myapp" },
     findLimit: 10,
+    models: { dir: "models" },
     slowQueryMs: 500,
   },
 };
+
+export default config;
 ```
 
 ```typescript
-// src/config/production.ts — production environment coverage
-export default {
+// src/config/development.ts — a valid partial database patch
+import type { VextConfigOverride } from "vextjs";
+
+const config: VextConfigOverride = {
   database: {
-    type: "srv",
+    findLimit: 25,
+    models: { validation: "strict" },
+  },
+};
+
+export default config;
+```
+
+```typescript
+// src/config/production.ts — patch the environment-specific connection URI
+import type { VextConfigOverride } from "vextjs";
+
+const config: VextConfigOverride = {
+  database: {
     config: {
-      host: process.env.MONGODB_HOST,
-      database: process.env.MONGODB_DATABASE,
-      username: process.env.MONGODB_USER,
-      password: process.env.MONGODB_PASSWORD,
+      uri: "mongodb://prod-db:27017/myapp",
     },
     slowQueryMs: 200, // The slow query threshold in the production environment is lower
   },
 };
+
+export default config;
 ```
 
 ```typescript
 // src/config/test.ts — The test environment uses an in-memory database
-export default {
+import type { VextConfigOverride } from "vextjs";
+
+const config: VextConfigOverride = {
   database: {
     useMemoryServer: true, // use mongodb-memory-server-core
   },
 };
+
+export default config;
 ```
+
+#### Layout B — database starts in a profile
+
+If the base deliberately omits `database`, the first profile that enables it
+must own a complete value. Validate that value with the strict database type,
+then place it in the profile override:
+
+```typescript
+// src/config/development.ts — no earlier database layer exists
+import type { MonSQLizeDatabaseConfig, VextConfigOverride } from "vextjs";
+
+const database = {
+  config: { uri: "mongodb://localhost:27017/myapp" },
+  findLimit: 25,
+  models: { dir: "models", validation: "strict" },
+} satisfies MonSQLizeDatabaseConfig;
+
+const config = { database } satisfies VextConfigOverride;
+
+export default config;
+```
+
+Repeat the complete `MonSQLizeDatabaseConfig` in every independently selectable
+profile that can be the first layer to enable the database.
 
 ## app.db — raw MonSQLize instance
 
@@ -963,13 +1024,21 @@ npm install -D mongodb-memory-server-core
 
 Vext uses the core package to avoid the `mongodb-memory-server` wrapper triggering binary downloads during the `npm install` phase. The MongoDB binary may still be downloaded when the test is started for the first time; it is recommended to set `MONGOMS_DOWNLOAD_DIR=.cache/mongodb-binaries` and `MONGOMS_PREFER_GLOBAL_PATH=false` in CI, and cache the directory; after the cache hit, `MONGOMS_RUNTIME_DOWNLOAD=false` can be used to verify that it will not be downloaded again.
 
+The partial `test.ts` below is valid only when an earlier layer already owns a
+complete database configuration. If `default.ts` omits `database`, provide the
+full `MonSQLizeDatabaseConfig` in this profile instead.
+
 ```typescript
 // src/config/test.ts
-export default {
+import type { VextConfigOverride } from "vextjs";
+
+const config: VextConfigOverride = {
   database: {
     useMemoryServer: true,
   },
 };
+
+export default config;
 ```
 
 ### Test example

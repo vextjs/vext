@@ -1230,9 +1230,18 @@ function verifyV2MigrationAndDatabaseDocumentationContract() {
   ]);
   requireTokens("CHANGELOG.md", [
     "2.0.0 candidate",
-    "Framework-level `frontend.seo`",
-    "Removed the duplicate `app.monsqlize` property",
+    "detailed v2.0.0 candidate notes",
+    "raw `app.db` replaces `app.monsqlize`",
     "does not claim that",
+  ]);
+  requireTokens("changelogs/v2.0.0.md", [
+    "Documentation, configuration, and scaffold corrections",
+    "VextConfigOverride",
+    "active `local` and `bootstrap`",
+    "VextJS parses `.env` files",
+    "AI-first full-stack Node.js positioning",
+    "built-in LLM, Agent, RAG system, or inference runtime",
+    "They do not create or imply a separately released `2.0.1`",
   ]);
   requireTokens("README.md", [
     "## 2.0.0 candidate highlights",
@@ -1499,6 +1508,11 @@ function verifyExampleAndMetadata() {
 }
 
 function verifyReadmePublicEntryContract() {
+  requireTokens("package.json", [
+    '"version": "2.0.0"',
+    '"description": "AI-first full-stack Node.js framework',
+    "typed contracts, OpenAPI, and machine-readable docs",
+  ]);
   requireTokens("README.md", [
     "## CLI",
     "## Get started",
@@ -1516,8 +1530,10 @@ function verifyReadmePublicEntryContract() {
     "https://devcodex-labs.github.io/vextjs/llms.txt",
     "https://devcodex-labs.github.io/vextjs/capabilities.json",
     "For AI assistants",
-    "Ship APIs and server-rendered React pages from one Node.js application",
-    "full-stack Node.js application framework",
+    "Build AI-assisted APIs and server-rendered React pages",
+    "AI-first full-stack Node.js application framework",
+    "conventions, scaffolding, typed contracts, OpenAPI",
+    "does not include a built-in LLM, Agent, RAG system, or inference runtime",
     "one route model and request lifecycle",
     "Route contracts drive validation",
     "config.database",
@@ -1543,29 +1559,38 @@ function verifyReadmePublicEntryContract() {
   ]);
 
   requireTokens("website/docs/en/index.mdx", [
-    "full-stack Node.js application framework",
-    "under one route model and request lifecycle",
+    "AI-FIRST / FULL-STACK NODE.JS",
+    "AI-first full-stack Node.js application framework",
+    "machine-readable docs give AI coding assistants explicit inputs",
+    "does not mean a built-in LLM, Agent, RAG system, or inference runtime",
     "Route contracts feed validation, docs, and client types",
     "not an",
     "Edge runtime adapter",
   ]);
   forbidTokens("website/docs/en/index.mdx", [
+    "VEXTJS 1.0.1",
     "stay on one request path",
     "Validation feeds docs and typed clients",
     "edge scenarios",
   ]);
   requireTokens("website/docs/zh/index.mdx", [
-    "Node.js 全栈应用框架",
-    "一套路由模型与请求生命周期",
+    "AI-FIRST / FULL-STACK NODE.JS",
+    "AI-first Node.js 全栈应用框架",
+    "机器可读文档为 AI 编程助手提供明确输入",
+    "AI-first 不代表内置 LLM、Agent、RAG 系统或推理 runtime",
     "路由契约驱动校验、文档和客户端类型",
     "不是 Edge runtime adapter",
   ]);
   forbidTokens("website/docs/zh/index.mdx", [
+    "VEXTJS 1.0.1",
     "共用一条请求链",
     "校验驱动文档和类型客户端",
     "适合边缘",
   ]);
   requireTokens("website/docs/en/guide/introduction.md", [
+    "AI-first full-stack Node.js framework",
+    "designed for AI-assisted development",
+    "does not mean VextJS bundles an LLM, Agent, RAG system, or inference runtime",
     "Hono + Vext's `node:http` bridge",
     "Node.js applications",
     "config.database",
@@ -1576,6 +1601,9 @@ function verifyReadmePublicEntryContract() {
     "conditional loading with zero overhead",
   ]);
   requireTokens("website/docs/zh/guide/introduction.md", [
+    "AI-first Node.js 全栈框架",
+    "面向 AI 辅助开发的工程界面",
+    "不代表 VextJS 内置 LLM、Agent、RAG 系统或推理 runtime",
     "Hono + Vext 的 `node:http` 桥接",
     "Node.js 应用",
     "config.database",
@@ -1584,6 +1612,12 @@ function verifyReadmePublicEntryContract() {
     "Hono + `@hono/node-server`",
     "全栈 / 边缘运行时",
     "条件加载零开销",
+  ]);
+  requireTokens("website/rspress.config.ts", [
+    "AI-first full-stack Node.js framework",
+    "AI-first Node.js 全栈框架",
+    "typed contracts, OpenAPI, machine-readable docs",
+    "支持 AI 辅助开发",
   ]);
   // Cold-start must not put bare `npx vext create` in copy-paste fences.
   // Local binary usage (`npx vext dev`) after install remains valid.
@@ -2040,6 +2074,134 @@ function runTokenizerSelfTest() {
   }
 }
 
+function verifyConfigurationArchitectureDocumentationContract() {
+  const contracts = {
+    en: {
+      structure: [
+        "src/types/server/services/<domain>.ts",
+        "src/constants/services/<domain>.ts",
+        "`src/utils/`",
+        "Vext does not auto-scan, instantiate, or inject",
+        "src/services/_types",
+        "browser-safe",
+      ],
+      configuration: [
+        "TypeScript base and override layers",
+        "VextUserConfig",
+        "VextConfigOverride",
+        "MonSQLizeDatabaseConfig",
+        "does not automatically parse `.env` files",
+        "not another built-in Vext profile layer",
+      ],
+      database: [
+        "Do not split a half database across layers",
+        "VextUserConfig",
+        "VextConfigOverride",
+        "MonSQLizeDatabaseConfig",
+        'models: { dir: "models" }',
+        'models: { validation: "strict" }',
+        "omit `database` entirely from `default.ts`",
+        "valid only when an earlier layer already owns",
+        "Layout B — database starts in a profile",
+        "satisfies MonSQLizeDatabaseConfig",
+      ],
+      deployment: [
+        "does not automatically parse `.env` files",
+        "process.env",
+        ".env*",
+        "Git protection does not mean Vext loads those files",
+      ],
+      testing: [
+        "src/config/default.ts",
+        "database",
+        "complete database configuration",
+      ],
+    },
+    zh: {
+      structure: [
+        "src/types/server/services/<domain>.ts",
+        "src/constants/services/<domain>.ts",
+        "`src/utils/`",
+        "Vext 不会自动扫描、实例化",
+        "src/services/_types",
+        "browser-safe",
+      ],
+      configuration: [
+        "TypeScript 基础配置与覆盖层",
+        "VextUserConfig",
+        "VextConfigOverride",
+        "MonSQLizeDatabaseConfig",
+        "不会自动解析 `.env` 文件",
+        "不是另一个内建的",
+      ],
+      database: [
+        "不要跨层拆分半截 database",
+        "VextUserConfig",
+        "VextConfigOverride",
+        "MonSQLizeDatabaseConfig",
+        'models: { dir: "models" }',
+        'models: { validation: "strict" }',
+        "`default.ts` 完全不声明 `database`",
+        "仅在前层已经拥有",
+        "布局 B — database 从 profile 开始",
+        "satisfies MonSQLizeDatabaseConfig",
+      ],
+      deployment: [
+        "不会自动解析 `.env` 文件",
+        "process.env",
+        ".env*",
+        "这项 Git 防护不表示 Vext 会加载它们",
+      ],
+      testing: ["src/config/default.ts", "database", "完整 database 配置"],
+    },
+  };
+
+  for (const [locale, contract] of Object.entries(contracts)) {
+    const root = `website/docs/${locale}`;
+    requireTokens(`${root}/guide/project-structure.md`, contract.structure);
+    requireTokens(`${root}/guide/configuration.md`, contract.configuration);
+    forbidTokens(`${root}/guide/configuration.md`, ["# .env", "```dotenv"]);
+    requireTokens(`${root}/api/config.md`, [
+      "VextUserConfig",
+      "VextConfigOverride",
+      "VextConfigOverrideAtomicPathRegistry",
+      "MonSQLizeDatabaseConfig",
+      '"myPlugin.client": true',
+    ]);
+    requireTokens(`${root}/guide/database.md`, contract.database);
+    requireTokens(`${root}/guide/deployment.md`, contract.deployment);
+    forbidTokens(`${root}/guide/deployment.md`, ["# .env", "```dotenv"]);
+
+    for (const scaffoldDoc of [
+      "guide/project-structure.md",
+      "guide/quick-start.md",
+      "guide/cli.md",
+    ]) {
+      requireTokens(`${root}/${scaffoldDoc}`, [
+        "local.ts",
+        "bootstrap.ts",
+        "VextConfigOverride",
+        "providers: []",
+      ]);
+      forbidTokens(`${root}/${scaffoldDoc}`, [
+        "local.example",
+        "bootstrap.example",
+      ]);
+    }
+
+    for (const testingDoc of ["guide/testing.md", "api/testing-api.md"]) {
+      requireTokens(`${root}/${testingDoc}`, [
+        "VextConfigOverride",
+        ...contract.testing,
+      ]);
+      forbidTokens(`${root}/${testingDoc}`, [
+        "config?: Partial<VextConfig>",
+        "`Partial<VextConfig>`",
+      ]);
+    }
+  }
+}
+
 function verifyRepairLifecycleDocumentationContract() {
   const contracts = {
     en: {
@@ -2206,6 +2368,7 @@ if (renderedOnly) {
   verifyExampleAndMetadata();
   verifyExecutableExampleDocumentationContract();
   verifyV2MigrationAndDatabaseDocumentationContract();
+  verifyConfigurationArchitectureDocumentationContract();
   verifyRepairLifecycleDocumentationContract();
 }
 

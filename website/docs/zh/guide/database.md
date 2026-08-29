@@ -231,43 +231,102 @@ Redis 缓存连接字段以 `uri` 为准；`url` 仅作为旧配置兼容别名�
 
 ### 多环境配置
 
-利用 VextJS 的三层配置合并机制，为不同环境配置不同的数据库：
+运行时深度合并支持按环境 patch 数据库，但 TypeScript 文件的职责不同：`default.ts` 是完整 base，使用 `VextUserConfig`；profile 文件是后层 patch，使用 `VextConfigOverride`。
+
+:::warning 不要跨层拆分半截 database
+不要在 `default.ts` 里只写 `findLimit` / `models`，再把必填的 `config.uri` 留到 `development.ts`。`default.ts` 中写出的 `database` 对象必须独立满足 `MonSQLizeDatabaseConfig`；TypeScript 不会把检查推迟到运行时合并之后。应先在 base 提供完整连接，再由后层只覆盖环境差异。
+:::
+
+可以选择两种健全结构：像下面的例子一样，在 `default.ts` 中保留一份完整
+`database`，后续 profile 用 `VextConfigOverride` 只写差异；或者让 `default.ts`
+完全不声明 `database`，每个会启用数据库的 profile 都提供完整
+`MonSQLizeDatabaseConfig`。第二种结构应单独用 `MonSQLizeDatabaseConfig`
+校验 profile 的 database 值；前层不存在 database 时，不得用更宽松的覆盖类型
+掩盖连接缺失。
+
+#### 布局 A — base 中提供完整 database
 
 ```typescript
-// src/config/default.ts — 基础配置
-export default {
+// src/config/default.ts — 完整 base
+import type { VextUserConfig } from "vextjs";
+
+const config: VextUserConfig = {
   database: {
     config: { uri: "mongodb://localhost:27017/myapp" },
     findLimit: 10,
+    models: { dir: "models" },
     slowQueryMs: 500,
   },
 };
+
+export default config;
 ```
 
 ```typescript
-// src/config/production.ts — 生产环境覆盖
-export default {
+// src/config/development.ts — 合法的局部 database patch
+import type { VextConfigOverride } from "vextjs";
+
+const config: VextConfigOverride = {
   database: {
-    type: "srv",
+    findLimit: 25,
+    models: { validation: "strict" },
+  },
+};
+
+export default config;
+```
+
+```typescript
+// src/config/production.ts — patch 环境专属的连接 URI
+import type { VextConfigOverride } from "vextjs";
+
+const config: VextConfigOverride = {
+  database: {
     config: {
-      host: process.env.MONGODB_HOST,
-      database: process.env.MONGODB_DATABASE,
-      username: process.env.MONGODB_USER,
-      password: process.env.MONGODB_PASSWORD,
+      uri: "mongodb://prod-db:27017/myapp",
     },
     slowQueryMs: 200, // 生产环境慢查询阈值更低
   },
 };
+
+export default config;
 ```
 
 ```typescript
 // src/config/test.ts — 测试环境使用内存数据库
-export default {
+import type { VextConfigOverride } from "vextjs";
+
+const config: VextConfigOverride = {
   database: {
     useMemoryServer: true, // 使用 mongodb-memory-server-core
   },
 };
+
+export default config;
 ```
+
+#### 布局 B — database 从 profile 开始
+
+如果 base 有意省略 `database`，第一个启用数据库的 profile 必须拥有完整值。先用
+严格数据库类型校验该值，再放入 profile override：
+
+```typescript
+// src/config/development.ts — 前层不存在 database
+import type { MonSQLizeDatabaseConfig, VextConfigOverride } from "vextjs";
+
+const database = {
+  config: { uri: "mongodb://localhost:27017/myapp" },
+  findLimit: 25,
+  models: { dir: "models", validation: "strict" },
+} satisfies MonSQLizeDatabaseConfig;
+
+const config = { database } satisfies VextConfigOverride;
+
+export default config;
+```
+
+每个可能作为首个数据库启用层、且可独立选择的 profile，都必须重复提供完整的
+`MonSQLizeDatabaseConfig`。
 
 ## app.db — 原始 MonSQLize 实例
 
@@ -955,13 +1014,21 @@ npm install -D mongodb-memory-server-core
 
 Vext 使用 core 包以避免 `mongodb-memory-server` wrapper 在 `npm install` 阶段触发 binary 下载。测试首次启动时仍可能下载 MongoDB binary；建议在 CI 中设置 `MONGOMS_DOWNLOAD_DIR=.cache/mongodb-binaries` 与 `MONGOMS_PREFER_GLOBAL_PATH=false`，并缓存该目录；缓存命中后可用 `MONGOMS_RUNTIME_DOWNLOAD=false` 验证不会再次下载。
 
+下面的局部 `test.ts` 仅在前层已经拥有完整 database 配置时成立。如果
+`default.ts` 完全不声明 `database`，这个 profile 必须改为提供完整的
+`MonSQLizeDatabaseConfig`。
+
 ```typescript
 // src/config/test.ts
-export default {
+import type { VextConfigOverride } from "vextjs";
+
+const config: VextConfigOverride = {
   database: {
     useMemoryServer: true,
   },
 };
+
+export default config;
 ```
 
 ### 测试示例

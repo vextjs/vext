@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": "../..",
+    "declaration": false,
+    "noEmit": true,
+    "rootDir": "../..",
+    "strict": true,
+    "paths": {
+      "vextjs": ["src/index.ts"],
+      "vextjs/testing": ["src/testing/index.ts"]
+    }
+  },
+  "files": ["./config-override.ts", "./testing-config-override.ts"]
+}

@@ -519,12 +519,11 @@ function getTemplateFiles(
   // ── src/config/production ─────────────────────────────
   files[`src/config/production.${ext}`] = generateProductionConfig(isTs);
 
-  // ── src/config/local.example ──────────────────────────
-  files[`src/config/local.example.${ext}`] = generateLocalExampleConfig(isTs);
+  // ── src/config/local ──────────────────────────────────
+  files[`src/config/local.${ext}`] = generateLocalConfig(isTs);
 
-  // ── src/config/bootstrap.example ──────────────────────
-  files[`src/config/bootstrap.example.${ext}`] =
-    generateBootstrapExampleConfig(isTs);
+  // ── src/config/bootstrap ──────────────────────────────
+  files[`src/config/bootstrap.${ext}`] = generateBootstrapConfig(isTs);
 
   // ── src/routes/index ──────────────────────────────────
   files[`src/routes/index.${ext}`] = generateIndexRoute(isTs, isFullstack);
@@ -667,69 +666,39 @@ coverage/
 `;
 }
 
-function generateLocalExampleConfig(isTs: boolean): string {
+function generateLocalConfig(isTs: boolean): string {
   if (isTs) {
-    return `import type { VextUserConfig } from 'vextjs'
+    return `import type { VextConfigOverride } from 'vextjs'
 
-// Copy this file to local.ts for machine-specific overrides.
-// Do not commit local.ts; it may reference private infrastructure.
-const config: Partial<VextUserConfig> = {
-  logger: {
-    level: 'debug',
-    pretty: true,
-  },
-}
+const config: VextConfigOverride = {}
 
 export default config
 `;
   }
 
-  return `/** @type {Partial<import('vextjs').VextUserConfig>} */
-// Copy this file to local.js for machine-specific overrides.
-// Do not commit local.js; it may reference private infrastructure.
-const config = {
-  logger: {
-    level: 'debug',
-    pretty: true,
-  },
-}
+  return `/** @type {import('vextjs').VextConfigOverride} */
+const config = {}
 
 export default config
 `;
 }
 
-function generateBootstrapExampleConfig(isTs: boolean): string {
+function generateBootstrapConfig(isTs: boolean): string {
   if (isTs) {
     return `import { defineBootstrapConfig } from 'vextjs'
 
-// Copy this file to bootstrap.ts when startup-time config must be loaded
-// before the final app config is validated and frozen.
+// Add startup configuration providers here when needed.
 export default defineBootstrapConfig({
-  providers: [
-    {
-      name: 'example-provider',
-      async load() {
-        return null
-      },
-    },
-  ],
+  providers: [],
 })
 `;
   }
 
   return `import { defineBootstrapConfig } from 'vextjs'
 
-// Copy this file to bootstrap.js when startup-time config must be loaded
-// before the final app config is validated and frozen.
+// Add startup configuration providers here when needed.
 export default defineBootstrapConfig({
-  providers: [
-    {
-      name: 'example-provider',
-      async load() {
-        return null
-      },
-    },
-  ],
+  providers: [],
 })
 `;
 }
@@ -858,9 +827,9 @@ export default config
 
 function generateDevelopmentConfig(isTs: boolean): string {
   if (isTs) {
-    return `import type { VextUserConfig } from 'vextjs'
+    return `import type { VextConfigOverride } from 'vextjs'
 
-const config: Partial<VextUserConfig> = {
+const config: VextConfigOverride = {
   logger: {
     level: 'debug',
     pretty: true,
@@ -871,7 +840,7 @@ export default config
 `;
   }
 
-  return `/** @type {Partial<import('vextjs').VextUserConfig>} */
+  return `/** @type {import('vextjs').VextConfigOverride} */
 const config = {
   logger: {
     level: 'debug',
@@ -885,9 +854,9 @@ export default config
 
 function generateProductionConfig(isTs: boolean): string {
   if (isTs) {
-    return `import type { VextUserConfig } from 'vextjs'
+    return `import type { VextConfigOverride } from 'vextjs'
 
-const config: Partial<VextUserConfig> = {
+const config: VextConfigOverride = {
   port: 3001,
   logger: {
     level: 'info',
@@ -899,7 +868,7 @@ export default config
 `;
   }
 
-  return `/** @type {Partial<import('vextjs').VextUserConfig>} */
+  return `/** @type {import('vextjs').VextConfigOverride} */
 const config = {
   port: 3001,
   logger: {

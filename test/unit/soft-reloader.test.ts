@@ -1199,6 +1199,39 @@ describe("SoftReloader", () => {
       );
     });
 
+    it("routes a changed runtime service constant through selective service reload", async () => {
+      const constantPath =
+        "/project/.vext/dev/constants/services/order-status.js";
+      const servicePath = "/project/.vext/dev/services/order.js";
+      const invalidated = new Set([constantPath, servicePath]);
+      vi.mocked(invalidateAndEvict).mockReturnValue({
+        invalidated,
+        cascadeDetected: false,
+        evicted: 2,
+        skipped: 0,
+      });
+
+      const options = createDefaultOptions();
+      const reloader = new SoftReloader(options);
+
+      await reloader.reload([
+        {
+          path: "src/constants/services/order-status.ts",
+          type: "modify",
+        },
+      ]);
+
+      expect(invalidateAndEvict).toHaveBeenCalledWith(
+        [constantPath],
+        "/project/.vext/dev",
+      );
+      expect(reloadServices).toHaveBeenCalledWith(
+        expect.anything(),
+        "/project/.vext/dev",
+        invalidated,
+      );
+    });
+
     it("result.evictedModules 应反映实际驱逐数量", async () => {
       vi.mocked(invalidateAndEvict).mockReturnValue({
         invalidated: new Set(["a.js", "b.js", "c.js"]),

@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -7,6 +7,14 @@ import {
   createCodeDocsProvider,
   loadCodeDocs,
 } from "../../../src/lib/docs/sources/code-jsdoc-source.js";
+
+const SERVICE_SUPPORT_FIXTURE = join(
+  process.cwd(),
+  "test",
+  "fixtures",
+  "service-support-boundaries",
+  "src",
+);
 
 describe("loadCodeDocs", () => {
   let rootDir: string;
@@ -262,6 +270,32 @@ export const dashboardRoot = "dashboard-root"
         usage: 'middlewares: [{ name: "check-role", options: { /* ... */ } }]',
       },
     });
+  });
+
+  it("projects only the service owner from the service support boundaries fixture", async () => {
+    await cp(SERVICE_SUPPORT_FIXTURE, srcDir, { recursive: true });
+
+    const docs = await loadCodeDocs({
+      rootDir,
+      srcDir,
+      modelsDir: "models",
+      config: normalizeDocsConfig({}),
+    });
+    const serviceItems = docs.items.filter((item) => item.kind === "service");
+
+    expect(serviceItems.map((item) => item.id)).toEqual(
+      expect.arrayContaining([
+        "service:order#default",
+        "service:order#currentStatus",
+        "service:order#findById",
+      ]),
+    );
+    expect([...new Set(serviceItems.map((item) => item.sourceFile))]).toEqual([
+      "services/order.ts",
+    ]);
+    expect(docs.items.map((item) => item.sourceFile).join("\n")).not.toMatch(
+      /(?:^|\/)(?:types|constants)\//u,
+    );
   });
 
   it("loads optional static docs sources when explicitly enabled", async () => {

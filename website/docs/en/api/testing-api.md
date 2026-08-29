@@ -68,7 +68,7 @@ Configuration options for `createTestApp`. All fields are optional.
 
 ```typescript
 interface CreateTestAppOptions {
-  config?: Partial<VextConfig>;
+  config?: VextConfigOverride;
   plugins?: boolean;
   setupPlugins?: (app: VextApp) => Promise<void> | void;
   services?: boolean;
@@ -82,23 +82,29 @@ interface CreateTestAppOptions {
 
 ### Field description
 
-| Field          | Type                         | Default Value   | Description                                                                            |
-| -------------- | ---------------------------- | --------------- | -------------------------------------------------------------------------------------- |
-| `config`       | `Partial<VextConfig>`        | `{}`            | Override the default configuration (deeply merged into the test default configuration) |
-| `plugins`      | `boolean`                    | `false`         | Whether to load `src/plugins/` (not loaded by default in the test environment)         |
-| `setupPlugins` | `Function`                   | `undefined`     | Manually register plugins (replacing automatic scanning)                               |
-| `services`     | `boolean`                    | `true`          | Whether to load `src/services/`                                                        |
-| `mockServices` | `Partial<VextServices>`      | `undefined`     | Manually inject mock services                                                          |
-| `routes`       | `boolean`                    | `true`          | Whether to load `src/routes/`                                                          |
-| `middlewares`  | `boolean`                    | `true`          | Whether to load `src/middlewares/`                                                     |
-| `rootDir`      | `string`                     | `process.cwd()` | Project root directory (used to locate the `src/` subdirectory)                        |
-| `devOverlay`   | `(error: unknown) => string` | `undefined`     | Optional HTML error renderer when the request accepts `text/html`                      |
+| Field          | Type                         | Default Value   | Description                                                                    |
+| -------------- | ---------------------------- | --------------- | ------------------------------------------------------------------------------ |
+| `config`       | `VextConfigOverride`         | `{}`            | Later-layer patch merged over framework and test defaults                      |
+| `plugins`      | `boolean`                    | `false`         | Whether to load `src/plugins/` (not loaded by default in the test environment) |
+| `setupPlugins` | `Function`                   | `undefined`     | Manually register plugins (replacing automatic scanning)                       |
+| `services`     | `boolean`                    | `true`          | Whether to load `src/services/`                                                |
+| `mockServices` | `Partial<VextServices>`      | `undefined`     | Manually inject mock services                                                  |
+| `routes`       | `boolean`                    | `true`          | Whether to load `src/routes/`                                                  |
+| `middlewares`  | `boolean`                    | `true`          | Whether to load `src/middlewares/`                                             |
+| `rootDir`      | `string`                     | `process.cwd()` | Project root directory (used to locate the `src/` subdirectory)                |
+| `devOverlay`   | `(error: unknown) => string` | `undefined`     | Optional HTML error renderer when the request accepts `text/html`              |
 
 ---
 
 ### `config`
 
-Cover the default configuration of the test and merge deeply.
+Patch framework and test defaults using the same path-aware deep-merge semantics
+as profile/local configuration. Nested plain objects already present in those
+defaults may be partial; atomic adapters, stores, callbacks, and arrays remain
+complete values. `createTestApp()` does not load the project's
+`src/config/default.ts`, and its built-in defaults do not include `database`, so
+adding that optional section requires a complete database configuration rather
+than a partial patch.
 
 ```typescript
 testApp = await createTestApp({

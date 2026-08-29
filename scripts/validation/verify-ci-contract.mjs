@@ -11,6 +11,21 @@ const workflow = readFileSync(
   path.join(root, ".github", "workflows", "ci.yml"),
   "utf8",
 );
+const bashLocalCi = readFileSync(
+  path.join(root, "scripts", "ci-local.sh"),
+  "utf8",
+);
+const powershellLocalCi = readFileSync(
+  path.join(root, "scripts", "ci-local.ps1"),
+  "utf8",
+);
+const sourcePreflight = readFileSync(
+  path.join(root, "scripts", "release-preflight.mjs"),
+  "utf8",
+);
+const packageJson = JSON.parse(
+  readFileSync(path.join(root, "package.json"), "utf8"),
+);
 
 function fail(message) {
   console.error(`CI contract verification failed: ${message}`);
@@ -47,6 +62,13 @@ function requireOrderedTokens(label, content, tokens) {
   }
 }
 
+if (
+  packageJson.scripts?.["test:types"] !==
+  "tsc -p test/types/tsconfig.json --pretty false"
+) {
+  fail("package.json must expose the isolated test:types contract");
+}
+
 requireTokens("lint-typecheck", jobBlock("lint-typecheck"), [
   "fetch-depth: 0",
   "npm run lint",
@@ -54,7 +76,31 @@ requireTokens("lint-typecheck", jobBlock("lint-typecheck"), [
   "FORMAT_CHECK_BASE:",
   "github.event.pull_request.base.sha || github.event.before",
   "npm run typecheck",
+  "npm run test:types",
   "npm run build",
+]);
+requireOrderedTokens("lint-typecheck", jobBlock("lint-typecheck"), [
+  "npm run typecheck",
+  "npm run test:types",
+  "npm run build",
+]);
+
+requireOrderedTokens("Bash local CI", bashLocalCi, [
+  "npm run typecheck",
+  "npm run test:types",
+  "npm run build",
+  "npm run format:check",
+]);
+requireOrderedTokens("PowerShell local CI", powershellLocalCi, [
+  "npm run typecheck",
+  "npm run test:types",
+  "npm run build",
+  "npm run format:check",
+]);
+requireOrderedTokens("source preflight", sourcePreflight, [
+  '"typecheck", npm, ["run", "typecheck"]',
+  '"public type contract tests", npm, ["run", "test:types"]',
+  '"ESM/CJS build", npm, ["run", "build"]',
 ]);
 
 requireTokens("docs-build", jobBlock("docs-build"), [

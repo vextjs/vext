@@ -97,8 +97,8 @@ my-app/
 │ │ ├── default.ts # Shared configuration (port: 3000)
 │ │ ├── development.ts # Development profile
 │ │ ├── production.ts # Production profile
-│ │ ├── local.example.ts # Copy to local.ts for local-only overrides
-│ │ └── bootstrap.example.ts # Copy to bootstrap.ts for startup providers
+│ │ ├── local.ts # Empty local override; ignored by Git
+│ │ └── bootstrap.ts # Tracked startup entry with providers: []
 │ ├── frontend/
 │ │ ├── components/AppShell.tsx # Shared React shell
 │ │ ├── locales/en-US.ts # Starter messages
@@ -140,7 +140,7 @@ that public TypeScript tree; their tooling declarations remain under
 | TypeScript API-only (`--template api --frontend none`) | `generated/**` only                            |
 | JavaScript starter                                     | No `src/types` directory is created            |
 
-The scaffold does not reserve `src/types/server/**`. Keep a type that is private to one route or service next to that server owner; create your own server-oriented folder only when your application has a real shared server boundary.
+The scaffold does not reserve `src/types/server/**`. Keep a type that is private to one route or service next to that server owner; create `src/types/server/services/**` only when your application has a real shared backend service boundary. Runtime enum/constant values belong owner-near or under `src/constants/services/**`, not under `src/types/**`; see [Project structure](/guide/project-structure).
 
 The starter deliberately does not create root or directory-level placeholder `README.md` files. Generated user source is English-first in both TypeScript and JavaScript, for full-stack and API-only templates; files under explicit locale directories are the only language-content exception. Conventional directories such as `src/middlewares/`, `src/plugins/`, `src/locales/`, and the canonical `src/preload/` remain supported and are created when you add real source files. The legacy project-root `preload/` directory is not scaffolded.
 
@@ -155,7 +155,7 @@ npm run dev
 
 Visit `http://localhost:3000` and you should see the React client. API routes are available at `/api/hello` and `/api/health`.
 
-If you need to pull remote configuration (such as Nacos/bootstrap database configuration) before the configuration is frozen, you can copy `src/config/bootstrap.example.ts` to `src/config/bootstrap.ts` and register the provider through `defineBootstrapConfig()`. When local coverage is required, `src/config/local.example.ts` can be copied to `src/config/local.ts`, which is excluded by `.gitignore` by default.
+`vext create` directly generates `src/config/local.ts` as an empty `VextConfigOverride` and `src/config/bootstrap.ts` with `providers: []`. The defaults have no logger, provider, external connection, or other business side effect. `local.ts` is excluded by `.gitignore` and may be absent after clone; `bootstrap.ts` is tracked and can later register a provider through `defineBootstrapConfig()`.
 
 ## `vext dev` — development mode
 

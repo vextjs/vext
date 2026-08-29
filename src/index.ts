@@ -87,6 +87,8 @@ export type {
   VextRateLimiter,
   VextValidator,
   VextConfig,
+  VextConfigOverride,
+  VextConfigOverrideAtomicPathRegistry,
   VextUserConfig,
   VextMiddlewareDecl,
   VextMiddlewareConfig,

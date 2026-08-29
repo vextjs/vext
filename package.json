@@ -1,7 +1,7 @@
 {
   "name": "vextjs",
   "version": "2.0.0",
-  "description": "Full-stack Node.js framework for APIs and server-rendered pages with one route model, typed contracts, and built-in docs.",
+  "description": "AI-first full-stack Node.js framework for APIs and server-rendered pages with typed contracts, OpenAPI, and machine-readable docs.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -81,6 +81,7 @@
     "verify:benchmark-docs": "node test/benchmark/generate-website-results.mjs --check",
     "test:bench:fairness": "node test/benchmark/run-native-fairness.mjs",
     "typecheck": "tsc --noEmit",
+    "test:types": "tsc -p test/types/tsconfig.json --pretty false",
     "ci:local": "bash scripts/ci-local.sh",
     "ci:local:quick": "bash scripts/ci-local.sh --quick",
     "format": "prettier --write .",

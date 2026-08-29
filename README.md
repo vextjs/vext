@@ -6,9 +6,11 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue.svg)](https://www.typescriptlang.org/)
 [![Docs](https://img.shields.io/badge/docs-devcodex--labs.github.io-informational)](https://devcodex-labs.github.io/vextjs/)
 
-> **Ship APIs and server-rendered React pages from one Node.js application.**
+> **Build AI-assisted APIs and server-rendered React pages in one Node.js application.**
 
-VextJS is a full-stack Node.js application framework built around one route model and request lifecycle. Routes, services, validation, security, OpenAPI, typed contracts, and React SSR evolve together without introducing a second routing system.
+VextJS is an **AI-first full-stack Node.js application framework** built around one route model and request lifecycle. Routes, services, validation, security, OpenAPI, typed contracts, and React SSR evolve together without introducing a second routing system.
+
+AI-first describes the engineering surface: conventions, scaffolding, typed contracts, OpenAPI, and machine-readable documentation give AI coding assistants explicit inputs for AI-assisted development. VextJS does not include a built-in LLM, Agent, RAG system, or inference runtime.
 
 The npm package name is `vextjs`; the CLI binary is `vext`. Requires **Node.js >=20.19.0**. Cold-start from the registry with **`npx vextjs …`**. After install, use project scripts or local `npx vext`.
 
@@ -258,7 +260,7 @@ describe("API", () => {
 
 ---
 
-## Documentation and AI assistants
+## Documentation for people and AI assistants
 
 | Resource                        | URL                                                                    |
 | ------------------------------- | ---------------------------------------------------------------------- |

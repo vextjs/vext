@@ -45,8 +45,8 @@ expect(res.status).toBe(200);
 
 ```typescript
 interface CreateTestAppOptions {
-  /** 自定义配置（覆盖 default.ts） */
-  config?: Partial<VextConfig>;
+  /** 深度合并到框架默认值与测试默认值之上的后层 patch */
+  config?: VextConfigOverride;
 
   /** 是否加载 src/plugins/ 目录中的插件（默认 false） */
   plugins?: boolean;
@@ -70,6 +70,14 @@ interface CreateTestAppOptions {
   rootDir?: string;
 }
 ```
+
+`CreateTestAppOptions.config` 是覆盖层，不是独立的基础配置。`VextConfigOverride`
+允许测试局部 patch 框架/测试默认值中已经存在的嵌套字段；adapter、store、callback
+与数组等原子值仍必须完整提供。
+
+`createTestApp()` 不会加载项目的 `src/config/default.ts`，内置测试默认值也没有
+`database`。因此测试若新增这个可选 section，必须提供包含必填连接 `config` 的
+完整 database 配置；不能指望不存在的前层补齐半截 database。
 
 ### 常见配置场景
 

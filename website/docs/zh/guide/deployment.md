@@ -740,15 +740,18 @@ onFatalError: async (error, origin) => {
 
 ### 环境变量管理
 
-```bash
-# .env（本地开发，不提交到 Git）
-PORT=3000
-MONGODB_URL=mongodb://localhost:27017/myapp
-JWT_SECRET=local-dev-secret
+VextJS 不会自动解析 `.env` 文件，也不内置隐式 dotenv loader。代码通过
+`process.env` 读取的值，必须由操作系统、shell、进程管理器、容器平台、CI/CD、
+密钥管理服务或应用显式拥有的 loader 注入。脚手架仍会忽略 `.env*` 文件，以降低
+外部工具创建这些文件后被误提交的风险；这项 Git 防护不表示 Vext 会加载它们。
 
-# 生产环境通过 CI/CD 或密钥管理服务注入
-# Docker: docker run -e MONGODB_URL=... myapp
-# K8s: Secret + ConfigMap
+```bash
+# 由 shell 或 CI 为单个进程注入
+PORT=3000 MONGODB_URL=mongodb://localhost:27017/myapp npm start
+
+# 由容器/平台注入
+docker run -e MONGODB_URL=mongodb://mongo:27017/myapp myapp
+# Kubernetes：Secret + ConfigMap
 ```
 
 ## 性能优化

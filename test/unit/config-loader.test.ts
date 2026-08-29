@@ -2191,6 +2191,43 @@ describe("loadConfig — config profile selection", () => {
     expect(config.port).toBe(3100);
     expect(config.host).toBe("local.local");
   });
+
+  it("deeply merges a complete base database with profile and local patches", async () => {
+    fs.writeFileSync(
+      path.join(tmpDir, "default.js"),
+      `module.exports = {
+  port: 3000,
+  host: "default.local",
+  database: {
+    config: { uri: "mongodb://127.0.0.1:27017/app" },
+    findLimit: 10,
+    models: { dir: "models", autoRegister: true }
+  }
+};\n`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "development.js"),
+      `module.exports = {
+  database: { findLimit: 25, models: { validation: "strict" } }
+};\n`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "local.js"),
+      `module.exports = { database: { models: { dir: "local-models" } } };\n`,
+    );
+
+    const config = await loadConfig(tmpDir, { command: "dev" });
+
+    expect(config.database).toEqual({
+      config: { uri: "mongodb://127.0.0.1:27017/app" },
+      findLimit: 25,
+      models: {
+        dir: "local-models",
+        autoRegister: true,
+        validation: "strict",
+      },
+    });
+  });
 });
 
 describe("loadConfig — bootstrap config provider", () => {

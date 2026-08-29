@@ -100,7 +100,11 @@ catch {
 # ── 1. TypeScript Type Check ─────────────────────────────────
 
 Run-Step "TypeScript Type Check" {
-    npx tsc --noEmit
+    npm run typecheck
+}
+
+Run-Step "Public Type Contract Tests" {
+    npm run test:types
 }
 
 # ── 2. Build ─────────────────────────────────────────────────
@@ -130,7 +134,7 @@ Run-Step "E2E Tests" -SkipInQuick {
 # ── 6. Format Check ──────────────────────────────────────────
 
 Run-Step "Prettier Format Check" {
-    npx prettier --check .
+    npm run format:check
 }
 
 # ── 7. Docs Build ────────────────────────────────────────────

@@ -299,8 +299,8 @@ describe("vext create", () => {
           "src/config/default.ts",
           "src/config/development.ts",
           "src/config/production.ts",
-          "src/config/local.example.ts",
-          "src/config/bootstrap.example.ts",
+          "src/config/local.ts",
+          "src/config/bootstrap.ts",
           "src/routes/index.ts",
           "src/services/example.ts",
           "src/frontend/pages/index.tsx",
@@ -383,8 +383,8 @@ describe("vext create", () => {
           "src/config/default.js",
           "src/config/development.js",
           "src/config/production.js",
-          "src/config/local.example.js",
-          "src/config/bootstrap.example.js",
+          "src/config/local.js",
+          "src/config/bootstrap.js",
           "src/routes/index.js",
           "src/services/example.js",
         ]),
@@ -813,6 +813,71 @@ describe("vext create", () => {
             .map(([file]) => file);
 
           expect(filesWithHanText, `scenario: ${args.join(" ")}`).toEqual([]);
+        }
+      });
+
+      it("generates active zero-effect config for all four scaffold quadrants", async () => {
+        const scenarios = [
+          {
+            label: "TypeScript fullstack",
+            args: ["--skip-install"],
+            ext: "ts",
+            build: "vext build --typecheck",
+          },
+          {
+            label: "TypeScript API-only",
+            args: ["--template", "api", "--skip-install"],
+            ext: "ts",
+            build: "vext build --typecheck",
+          },
+          {
+            label: "JavaScript fullstack",
+            args: ["--js", "--skip-install"],
+            ext: "js",
+            build: "vext build",
+          },
+          {
+            label: "JavaScript API-only",
+            args: ["--js", "--template", "api", "--skip-install"],
+            ext: "js",
+            build: undefined,
+          },
+        ] as const;
+
+        for (const scenario of scenarios) {
+          vi.clearAllMocks();
+          setupFreshProject();
+          await createCommand(["test-app", ...scenario.args]);
+
+          const files = getWrittenFiles();
+          const configDir = "src/config";
+          const local = files[`${configDir}/local.${scenario.ext}`];
+          const bootstrap = files[`${configDir}/bootstrap.${scenario.ext}`];
+          const development = files[`${configDir}/development.${scenario.ext}`];
+          const production = files[`${configDir}/production.${scenario.ext}`];
+          const pkg = JSON.parse(files["package.json"]);
+
+          expect(local, scenario.label).toBe(
+            scenario.ext === "ts"
+              ? "import type { VextConfigOverride } from 'vextjs'\n\nconst config: VextConfigOverride = {}\n\nexport default config\n"
+              : "/** @type {import('vextjs').VextConfigOverride} */\nconst config = {}\n\nexport default config\n",
+          );
+          expect(bootstrap, scenario.label).toBe(
+            "import { defineBootstrapConfig } from 'vextjs'\n\n// Add startup configuration providers here when needed.\nexport default defineBootstrapConfig({\n  providers: [],\n})\n",
+          );
+          expect(development, scenario.label).toContain("VextConfigOverride");
+          expect(production, scenario.label).toContain("VextConfigOverride");
+          expect(pkg.scripts.build, scenario.label).toBe(scenario.build);
+          expect(
+            Object.keys(files).filter((file) => file.includes(".example.")),
+            scenario.label,
+          ).toEqual([]);
+          expect(files[".gitignore"], scenario.label).toContain(
+            `${configDir}/local.${scenario.ext}`,
+          );
+          expect(files[".gitignore"], scenario.label).not.toContain(
+            `${configDir}/bootstrap.${scenario.ext}`,
+          );
         }
       });
     });
@@ -1725,7 +1790,7 @@ describe("vext create", () => {
       expect(
         Object.keys(files).some((f: string) => f === "src/routes/index.js"),
       ).toBe(true);
-      expect(files["src/config/local.example.js"]).toBeDefined();
+      expect(files["src/config/local.js"]).toBeDefined();
 
       // native adapter
       expect(pkg.dependencies.hono).toBeUndefined();

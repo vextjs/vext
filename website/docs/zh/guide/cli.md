@@ -97,8 +97,8 @@ my-app/
 │   │   ├── default.ts        # 共享配置（port: 3000）
 │   │   ├── development.ts    # 开发环境 profile
 │   │   ├── production.ts     # 生产环境 profile
-│   │   ├── local.example.ts  # 复制为 local.ts 后添加本地覆盖
-│   │   └── bootstrap.example.ts # 复制为 bootstrap.ts 后添加启动期 provider
+│   │   ├── local.ts          # 空本地覆盖；被 Git 忽略
+│   │   └── bootstrap.ts      # 可跟踪的启动入口，默认 providers: []
 │   ├── frontend/
 │   │   ├── components/AppShell.tsx # 公共 React shell
 │   │   ├── locales/en-US.ts  # starter 文案
@@ -136,7 +136,7 @@ my-app/
 | TypeScript API-only（`--template api --frontend none`） | 仅 `generated/**`                            |
 | JavaScript 脚手架                                       | 创建时不生成 `src/types` 目录                |
 
-脚手架不会预留 `src/types/server/**`。只被单个 route 或 service 使用的类型，应放在该服务端 owner 附近；只有你的应用形成真实的服务端共享边界时，再自行建立面向服务端的目录。
+脚手架不会预留 `src/types/server/**`。只被单个 route 或 service 使用的类型应放在服务端 owner 附近；形成真实的后端 service 共享边界后，再创建 `src/types/server/services/**`。运行时 enum/constant 应就近放置或进入 `src/constants/services/**`，不能放进 `src/types/**`；详见[项目结构](/zh/guide/project-structure)。
 
 脚手架不会生成根目录或目录级的占位 `README.md` 文件。TypeScript、JavaScript 的全栈与 API-only 模板所生成的用户源码均以英文为默认语言；只有显式 locale 目录下的语言资源不受该约束。`src/middlewares/`、`src/plugins/`、`src/locales/` 与规范的 `src/preload/` 等约定目录仍受支持；添加真实源码时会按需创建。历史项目根 `preload/` 不会由脚手架生成。
 
@@ -151,7 +151,7 @@ npm run dev
 
 访问 `http://localhost:3000`，你应该能看到 React 客户端。API 路由位于 `/api/hello` 与 `/api/health`。
 
-如需在配置冻结前拉取远程配置（例如 Nacos / 启动期数据库配置），可将 `src/config/bootstrap.example.ts` 复制为 `src/config/bootstrap.ts` 并通过 `defineBootstrapConfig()` 注册 provider。需要本地覆盖时，可将 `src/config/local.example.ts` 复制为 `src/config/local.ts`，该文件默认被 `.gitignore` 排除。
+`vext create` 会直接生成空 `VextConfigOverride` 的 `src/config/local.ts`，以及 `providers: []` 的 `src/config/bootstrap.ts`。默认内容不包含 logger、provider、外部连接或其他业务副作用。`local.ts` 被 `.gitignore` 排除，clone 后可以不存在；`bootstrap.ts` 正常跟踪，后续可通过 `defineBootstrapConfig()` 注册 provider。
 
 ## `vext dev` — 开发模式
 

@@ -220,6 +220,204 @@ async function runRuntimeSmokes(consumerRoot) {
   }
 }
 
+async function runPackedTypeContract(consumerRoot) {
+  const rootFixturePath = path.join(consumerRoot, "type-contract.mts");
+  const rootTsconfigPath = path.join(consumerRoot, "tsconfig.json");
+  const rootCjsFixturePath = path.join(consumerRoot, "type-contract.cts");
+  const rootCjsTsconfigPath = path.join(consumerRoot, "cjs-tsconfig.json");
+  const testingFixturePath = path.join(
+    consumerRoot,
+    "testing-type-contract.ts",
+  );
+  const testingTsconfigPath = path.join(consumerRoot, "testing-tsconfig.json");
+
+  writeFileSync(
+    rootFixturePath,
+    `import type {
+  VextConfigOverride,
+  VextConfigOverrideAtomicPathRegistry,
+} from "vextjs";
+
+declare module "vextjs" {
+  interface VextConfig {
+    packedPlugin?: {
+      retry: { attempts: number; backoff: { minMs: number; maxMs: number } };
+      client: { name: string; request(path: string): Promise<unknown> };
+    };
+  }
+
+  interface VextConfigOverrideAtomicPathRegistry {
+    "packedPlugin.client": true;
+  }
+}
+
+const rootOverride = {
+  database: { findLimit: 40, models: { dir: "models" } },
+  packedPlugin: { retry: { backoff: { maxMs: 2_000 } } },
+} satisfies VextConfigOverride;
+
+const incompleteCacheHub = {
+  cache: {
+    // @ts-expect-error A Redis branch must retain its mode discriminator.
+    cacheHub: { url: "redis://127.0.0.1:6379" },
+  },
+} satisfies VextConfigOverride;
+
+const incompletePluginClient = {
+  packedPlugin: {
+    // @ts-expect-error Augmented capability paths remain atomic.
+    client: { name: "partial" },
+  },
+} satisfies VextConfigOverride;
+
+void rootOverride;
+void incompleteCacheHub;
+void incompletePluginClient;
+void (null as unknown as VextConfigOverrideAtomicPathRegistry);
+`,
+  );
+  writeFileSync(
+    rootCjsFixturePath,
+    `import type {
+  VextConfigOverride,
+  VextConfigOverrideAtomicPathRegistry,
+} from "vextjs";
+
+declare module "vextjs" {
+  interface VextConfig {
+    packedCjsPlugin?: {
+      retry: { attempts: number; backoff: { minMs: number; maxMs: number } };
+      client: { name: string; request(path: string): Promise<unknown> };
+    };
+  }
+
+  interface VextConfigOverrideAtomicPathRegistry {
+    "packedCjsPlugin.client": true;
+  }
+}
+
+const rootCjsOverride = {
+  logger: { level: "warn" },
+  packedCjsPlugin: { retry: { backoff: { maxMs: 2_000 } } },
+} satisfies VextConfigOverride;
+
+const incompleteCjsPluginClient = {
+  packedCjsPlugin: {
+    // @ts-expect-error CJS declarations preserve augmented atomic capabilities.
+    client: { name: "partial" },
+  },
+} satisfies VextConfigOverride;
+
+void rootCjsOverride;
+void incompleteCjsPluginClient;
+void (null as unknown as VextConfigOverrideAtomicPathRegistry);
+`,
+  );
+  writeFileSync(
+    testingFixturePath,
+    `import {
+  createTestApp,
+  type CreateTestAppOptions,
+} from "vextjs/testing";
+
+const testingOverride = {
+  config: {
+    logger: { level: "silent" },
+    response: { hideInternalErrors: true },
+  },
+  services: false,
+} satisfies CreateTestAppOptions;
+
+const incompleteTestingStore = {
+  config: {
+    session: {
+      // @ts-expect-error Testing config uses the same atomic store contract.
+      store: { get: () => null },
+    },
+  },
+} satisfies CreateTestAppOptions;
+
+void testingOverride;
+void incompleteTestingStore;
+void createTestApp;
+`,
+  );
+
+  const compilerOptions = {
+    target: "ES2022",
+    module: "NodeNext",
+    moduleResolution: "NodeNext",
+    strict: true,
+    noEmit: true,
+    skipLibCheck: true,
+    types: [],
+  };
+  writeFileSync(
+    rootTsconfigPath,
+    `${JSON.stringify(
+      {
+        compilerOptions,
+        files: ["type-contract.mts"],
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  writeFileSync(
+    rootCjsTsconfigPath,
+    `${JSON.stringify(
+      {
+        compilerOptions,
+        files: ["type-contract.cts"],
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  writeFileSync(
+    testingTsconfigPath,
+    `${JSON.stringify(
+      {
+        compilerOptions,
+        files: ["testing-type-contract.ts"],
+      },
+      null,
+      2,
+    )}\n`,
+  );
+
+  const compiler = path.join(root, "node_modules", "typescript", "bin", "tsc");
+  const compile = (label, projectPath) =>
+    new Promise((resolve, reject) => {
+      const child = spawn(
+        process.execPath,
+        [compiler, "--project", projectPath],
+        {
+          cwd: consumerRoot,
+          stdio: "inherit",
+          windowsHide: true,
+        },
+      );
+      child.once("error", reject);
+      child.once("close", (code) => {
+        if (code === 0) resolve();
+        else
+          reject(
+            new Error(
+              `${label} packed TypeScript contract failed with code ${code ?? "unknown"}`,
+            ),
+          );
+      });
+    });
+
+  await compile("root ESM", rootTsconfigPath);
+  console.log("Root ESM packed TypeScript contract passed.");
+  await compile("root CJS", rootCjsTsconfigPath);
+  console.log("Root CJS packed TypeScript contract passed.");
+  await compile("testing", testingTsconfigPath);
+  console.log("Testing packed TypeScript contract passed.");
+}
+
 async function verifyAcceptedConsumer(vextTarball) {
   if (!existsSync(acceptedConsumer)) {
     throw new Error(
@@ -348,6 +546,7 @@ async function main() {
   await npm(["ls", "vextjs", "monsqlize", "schema-dsl", "--all"], {
     cwd: consumer,
   });
+  await runPackedTypeContract(consumer);
   await runRuntimeSmokes(consumer);
 
   console.log(`Packed install verified for vextjs@${pkg.version}`);

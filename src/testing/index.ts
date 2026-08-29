@@ -15,6 +15,7 @@
 // @see 10-testing.md §11（内部实现概览）
 // @see IMPLEMENTATION-PLAN.md 任务 1.19
 
+import type {} from "../lib/plugins/monsqlize/types.js";
 import { createApp, DEFAULT_CONFIG } from "../lib/app.js";
 import { resolveAdapter } from "../lib/adapter-resolver.js";
 import { loadPlugins } from "../lib/plugin-loader.js";
@@ -46,7 +47,12 @@ import {
   emitNotFoundRequestHooks,
 } from "../lib/middlewares/request-hook.js";
 import { _deepMerge } from "../lib/config-loader.js";
-import type { VextApp, VextConfig, VextServices } from "../types/app.js";
+import type {
+  VextApp,
+  VextConfig,
+  VextConfigOverride,
+  VextServices,
+} from "../types/app.js";
 import type { VextInternalHooks } from "../types/hooks.js";
 import { createVextFetch, type VextFetchConfig } from "../lib/fetch.js";
 import type { VextMiddleware } from "../types/middleware.js";
@@ -66,8 +72,11 @@ import { Socket } from "node:net";
 export interface CreateTestAppOptions {
   /**
    * 覆盖默认配置（深度合并到 test 默认配置之上）
+   *
+   * createTestApp 不加载项目的 src/config/default.ts。若新增内置默认值中不存在的
+   * 可选 section（例如 database），仍须提供该 section 的完整必填配置。
    */
-  config?: Partial<VextConfig>;
+  config?: VextConfigOverride;
 
   /**
    * 是否加载 src/plugins/（默认 false — 测试环境默认不加载插件）

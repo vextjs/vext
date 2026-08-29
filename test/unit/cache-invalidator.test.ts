@@ -1040,6 +1040,40 @@ describe("cache-invalidator", () => {
       expect(result.invalidated.has(routeB)).toBe(true);
     });
 
+    it("invalidates an importing service when its runtime service constant changes", () => {
+      const outDir = testOutDir();
+
+      for (const key of Object.keys(require.cache)) {
+        delete require.cache[key];
+      }
+      for (let index = 0; index < 20; index++) {
+        injectCacheEntry(path.join(outDir, `filler-${index}.js`));
+      }
+
+      const orderStatus = path.join(
+        outDir,
+        "constants",
+        "services",
+        "order-status.js",
+      );
+      const orderService = path.join(outDir, "services", "order.js");
+      const orderRoute = path.join(outDir, "routes", "order.js");
+
+      injectCacheEntry(orderStatus);
+      injectCacheEntry(orderService, [orderStatus]);
+      injectCacheEntry(orderRoute, [orderService]);
+
+      const result = invalidateAndEvict([orderStatus], outDir);
+
+      expect(result.cascadeDetected).toBe(false);
+      expect(result.invalidated).toEqual(
+        new Set([orderStatus, orderService, orderRoute]),
+      );
+      expect(require.cache[orderStatus]).toBeUndefined();
+      expect(require.cache[orderService]).toBeUndefined();
+      expect(require.cache[orderRoute]).toBeUndefined();
+    });
+
     it("config 目录文件在 invalidation 传播中应被安全边界阻止", () => {
       const outDir = testOutDir();
 

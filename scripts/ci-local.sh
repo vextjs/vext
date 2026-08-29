@@ -16,11 +16,11 @@
 #
 # 对应 CI Jobs:
 #   0. version-check     → bash scripts/check-version-sync.sh
-#   1. lint-typecheck     → tsc --noEmit + npm run build
+#   1. lint-typecheck     → typecheck + public type contracts + build
 #   2. unit-tests         → vitest run test/unit
 #   3. integration-tests  → npm run build + vitest run test/integration
 #   4. e2e-tests          → vitest run test/e2e
-#   5. format-check       → prettier --check .
+#   5. format-check       → npm run format:check
 #   6. docs-build         → cd website && npm run build
 #
 # @see .github/workflows/ci.yml
@@ -104,7 +104,14 @@ fi
 # ── 1. Lint + Typecheck ─────────────────────────────────────
 
 step_start "TypeScript Type Check"
-if npx tsc --noEmit; then
+if npm run typecheck; then
+  step_pass
+else
+  step_fail
+fi
+
+step_start "Public Type Contract Tests"
+if npm run test:types; then
   step_pass
 else
   step_fail
@@ -151,7 +158,7 @@ fi
 # ── 5. Format Check ────────────────────────────────────────
 
 step_start "Prettier Format Check"
-if npx prettier --check .; then
+if npm run format:check; then
   step_pass
 else
   step_fail

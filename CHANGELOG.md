@@ -14,132 +14,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 2.0.0 candidate
 
-#### Added
+- Adds framework-level SEO and sitemaps, pure-HTML `hydration: "none"`, executable
+  examples, explicit TypeScript ownership, and branded OpenAPI Docs.
+- Includes the major-version contracts documented in [MIGRATION.md](./MIGRATION.md):
+  raw `app.db` replaces `app.monsqlize`, Model lookup uses exact keys, global
+  rate limiting is opt-in, and invalid path parameters return HTTP 400.
+- Hardens route projection, filesystem/deploy containment, runtime deadlines,
+  model/session lifecycle, public module identity, and CI/release qualification.
+- Adds a path-aware config override contract and zero-side-effect active scaffold
+  config files; clarifies service/type/constant/utils and external `.env` ownership;
+  and aligns the bounded AI-first positioning without adding an AI inference runtime.
 
-- Framework-level `frontend.seo` metadata, canonical, robots, and build/runtime
-  sitemap contracts, including per-page values, provider entries, and explicit
-  named deployment origins.
-- Route-level `hydration: "none"` for SSR pages that must emit HTML without a
-  client entry, serialized page payload, or React runtime.
-- Executable Hello World and MongoDB CRUD examples with install, typecheck,
-  build, runtime, validation, and OpenAPI assertions.
-- Explicit TypeScript scaffold boundaries under `src/types/shared`,
-  `src/types/frontend`, and Vext-managed `src/types/generated`; JavaScript
-  starters do not receive a public TypeScript source tree.
-
-#### Changed
-
-- `app.db` is now the single raw MonSQLize instance surface, preserving the
-  upstream API and adding only a read-only Mongo client getter plus narrow
-  soft-delete result compatibility.
-- Model lookup uses exact registered keys; database/pool scopes no longer
-  synthesize or fall back through prefixed keys.
-- Global rate limiting now defaults to off and is installed only when
-  `rateLimit.enabled === true`; direct factory and route override contracts are
-  preserved.
-- Path-parameter validation failures now return HTTP 400; body, query, header,
-  and cookie validation failures remain HTTP 422.
-- OpenAPI Docs now shares Vext brand geometry, favicon, teal/cyan light/dark
-  tokens, and green/amber mark accents with the frontend.
-- Build-indexed route modules now bind a named `defineRoutes` import from
-  `vextjs` to a finite set of default-export forms. Import aliases, inline
-  synchronous factories, and same-file top-level route-definition bindings are accepted;
-  re-exports, imported factories, callback identifiers, property callees, and
-  unused phantom `defineRoutes` calls are rejected or ignored as appropriate.
-- Build-indexed route metadata now follows a finite static grammar: literals,
-  same-file `const` bindings, TypeScript static wrappers, and canonical
-  `schemaAdapter.compileField(<static string>)` builders are accepted. Route
-  options helper calls, opaque schema objects, dynamic paths or schemas,
-  conditional registration, and nested registration fail with route context;
-  request-dependent SEO remains supported through `res.render(..., { seo })`.
-- Fastify handlers now retain reply ownership until a delayed SSR stream sends,
-  preventing React streaming responses from being finalized as an empty body.
-- New TypeScript scaffolds declare `@types/node` and run
-  `vext build --typecheck` from the generated build script. TypeScript
-  create/dev/typegen owns `src/types/generated`; JavaScript flows keep tooling
-  declarations under `.vext/types` and do not create that public shim.
-- Requests expose a lifecycle-bound `AbortSignal`; plugin setup and bootstrap
-  providers receive abort signals backed by hard deadlines.
-- Model auto-registration now validates a complete plan before commit, defaults
-  to strict discovery, tracks application ownership, and rolls back atomically.
-- Session auto-commit now awaits asynchronous stores at the response send
-  barrier, while the memory store performs bounded opportunistic expiry cleanup.
-
-#### Fixed
-
-- `defineRoutes()` now enforces a synchronous factory at the type and runtime
-  boundaries. Native async factories fail before execution, and custom
-  thenables fail transactionally without leaving partially registered routes or
-  clearing the route helper methods.
-- Runtime route validation now accepts the compiler-lowered top-level comma
-  sequence emitted by minified CJS builds, including allowed non-registrar app
-  configuration before routes. Source indexing keeps the stricter
-  direct-statement grammar and still rejects route helpers or control flow.
-- Static route projection now distinguishes the seven route registrar members
-  from other direct `VextApp` capability access, so configuration such as
-  `app.setRateLimiter()` no longer produces a false route-registration error.
-- SEO artifact output containment now treats POSIX and Windows separators,
-  drive paths, UNC paths, and traversal segments consistently on every host.
-- Ordinary `main` CI now distinguishes the unpublished 2.0.0 docs preview from
-  npm stable 1.0.2; tag releases retain an exact-version gate, and automatic
-  Pages deployment waits for the successful CI commit.
-- Pull requests execute the coverage job required by the aggregate `ci-ok`
-  gate, and final preflight reads external-consumer evidence for the current
-  package major instead of reusing v1 evidence.
-- Changed-file formatting pins the tracked `.gitignore` as its ignore source,
-  compares the complete PR/push delta, and fails closed when CI cannot resolve
-  that baseline, so local ignores or merge checkouts cannot hide formatting
-  failures.
-- SEO input is deeply normalized across defaults and routes; request-host
-  origin ambiguity, robots control characters, bare-wildcard endpoint
-  conflicts, and concurrent artifact-writer ownership now fail safely.
-- OpenAPI error responses and build-time request contracts now reuse the
-  runtime's canonical validation shapes, including path `400` versus other
-  request-validation `422` behavior.
-- TypeScript service loading now waits for its best-effort temporary-module
-  cleanup before returning, avoiding Windows directory-removal races under
-  concurrent test or application teardown.
-- Build cleanup, frontend output, static mounts, deploy manifests, upload state,
-  and filesystem staging now share lexical/realpath containment checks and
-  reject traversal, escaping symbolic links, duplicate keys, and hash/size
-  drift before destructive work or transfer.
-- Runtime sitemap/robots endpoints now preserve origin pathname bases, normalize
-  host authority, support bodyless `HEAD`, and enforce total URL, byte, and hard
-  time budgets.
-- Runtime sitemap/robots register explicit `HEAD` before same-path `GET`, avoiding
-  Fastify's automatic HEAD sibling collision while preserving ordinary GET
-  fallback behavior.
-- Route indexing/runtime registration now share canonical path and finite grammar
-  rules; Doctor manifests carry source fingerprints and stale snapshots refresh
-  unless `--manifest-only` is explicitly selected.
-- Plugin/bootstrap/route timeout paths now reject late continuations and roll
-  back framework state; streaming responses and session persistence observe the
-  same failure barriers.
-- CommonJS public subpaths share error and logger runtime identity, and ESM
-  preload resolution caches are isolated by project and resolution base.
-- Model hot reload now removes keys owned by deleted or renamed model source
-  files in the same atomic source-replacement transaction.
-- Failed asynchronous session persistence discards the staged success response
-  across all five adapters and re-enters the normal error response path without
-  an unhandled rejection or a new session cookie.
-- CI now runs lint and changed-file formatting, package and rendered-doc
-  contracts, plus a Windows/Node 22 representative path and package lane before
-  the aggregate `CI ✅` check can pass.
-
-#### Removed
-
-- Removed the duplicate `app.monsqlize` property; use the raw `app.db` entry
-  point for collections, Models, transactions, pools, events, and diagnostics.
-
-This entry documents the local 2.0.0 package candidate and does not claim that
-the package has been published.
+See the [detailed v2.0.0 candidate notes](./changelogs/v2.0.0.md) for the full
+change list, migration checklist, reliability fixes, and release blockers. This
+entry documents the local candidate and does not claim that `2.0.0` has been
+published.
 
 ## Version History
 
 | Version      | Date       | Type            | Key Theme                                                                                                                                                                                               |
 | ------------ | ---------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [Unreleased] | —          | —               | —                                                                                                                                                                                                       |
-| [2.0.0]      | —          | Major candidate | Framework SEO/sitemaps, pure-HTML SSR routes, branded OpenAPI Docs, executable examples, raw `app.db`, explicit type boundaries, and opt-in rate limiting [view](./changelogs/v2.0.0.md)                |
+| [2.0.0]      | —          | Major candidate | AI-first full-stack positioning, framework SEO/sitemaps, pure-HTML SSR, raw `app.db`, typed config/scaffold boundaries, and candidate hardening [view](./changelogs/v2.0.0.md)                          |
 | [1.0.2]      | 2026-08-17 | Patch           | Runtime contract fixes, OpenAPI/upload lifecycle documentation, adapter-matrix benchmark documentation, dependency and release hardening [view](./changelogs/v1.0.2.md)                                 |
 | [1.0.1]      | 2026-08-10 | Patch           | Docs/release validation: English product README, locale-specific AI indexes, `npx vextjs create` cold-start, identity/contract/compare URL fixes [view](./changelogs/v1.0.1.md)                         |
 | [1.0.0]      | 2026-08-10 | Major           | 首个稳定 v1：schema-dsl v3 / monsqlize 3.1 固定 GA 依赖、完整 route-native 前端运行时、SSR starter、文档与发布安全门禁；包含 Hono Node 流式响应桥生命周期修复 [查看](./changelogs/v1.0.0.md)            |

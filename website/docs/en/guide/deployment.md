@@ -756,15 +756,20 @@ onFatalError: async (error, origin) => {
 
 ### Environment variable management
 
-```bash
-# .env (local development, not submitted to Git)
-PORT=3000
-MONGODB_URL=mongodb://localhost:27017/myapp
-JWT_SECRET=local-dev-secret
+VextJS does not automatically parse `.env` files and does not bundle an implicit
+dotenv loader. Values read through `process.env` must be injected by the OS,
+shell, process manager, container platform, CI/CD system, secret manager, or a
+loader that your application explicitly owns. The scaffold still ignores
+`.env*` files to reduce accidental commits when external tools create them; that
+Git protection does not mean Vext loads those files.
 
-# Production environment is injected via CI/CD or key management service
-# Docker: docker run -e MONGODB_URL=... myapp
-# K8s: Secret + ConfigMap
+```bash
+# Shell or CI-owned injection for one process
+PORT=3000 MONGODB_URL=mongodb://localhost:27017/myapp npm start
+
+# Container/platform-owned injection
+docker run -e MONGODB_URL=mongodb://mongo:27017/myapp myapp
+# Kubernetes: Secret + ConfigMap
 ```
 
 ## Performance optimization

@@ -45,8 +45,8 @@ expect(res.status).toBe(200);
 
 ```typescript
 interface CreateTestAppOptions {
-  /** Custom configuration (override default.ts) */
-  config?: Partial<VextConfig>;
+  /** Later-layer patch merged over framework and test defaults */
+  config?: VextConfigOverride;
 
   /** Whether to load plug-ins in the src/plugins/ directory (default false) */
   plugins?: boolean;
@@ -70,6 +70,17 @@ interface CreateTestAppOptions {
   rootDir?: string;
 }
 ```
+
+`CreateTestAppOptions.config` is an override layer, not a standalone base
+configuration. `VextConfigOverride` lets a test patch nested fields already
+present in the framework/test defaults. Atomic adapters, stores, callbacks, and
+arrays still have to be supplied as complete values.
+
+`createTestApp()` does not load the project's `src/config/default.ts`. The
+built-in test defaults do not define `database`, so a test that adds that
+optional section must provide a complete database configuration, including its
+required connection `config`; a half database has no earlier test layer to
+complete it.
 
 ### Common configuration scenarios
 

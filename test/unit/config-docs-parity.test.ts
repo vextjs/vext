@@ -8,6 +8,35 @@ const CONFIG_DOCS = [
   new URL("../../website/docs/zh/api/config.md", import.meta.url),
 ];
 
+const LAYERING_DOCS = [
+  ...CONFIG_DOCS,
+  new URL("../../website/docs/en/guide/configuration.md", import.meta.url),
+  new URL("../../website/docs/zh/guide/configuration.md", import.meta.url),
+  new URL("../../website/docs/en/guide/database.md", import.meta.url),
+  new URL("../../website/docs/zh/guide/database.md", import.meta.url),
+];
+
+const TESTING_DOCS = [
+  new URL("../../website/docs/en/guide/testing.md", import.meta.url),
+  new URL("../../website/docs/zh/guide/testing.md", import.meta.url),
+  new URL("../../website/docs/en/api/testing-api.md", import.meta.url),
+  new URL("../../website/docs/zh/api/testing-api.md", import.meta.url),
+];
+
+const SCAFFOLD_DOCS = [
+  new URL("../../website/docs/en/guide/project-structure.md", import.meta.url),
+  new URL("../../website/docs/zh/guide/project-structure.md", import.meta.url),
+  new URL("../../website/docs/en/guide/quick-start.md", import.meta.url),
+  new URL("../../website/docs/zh/guide/quick-start.md", import.meta.url),
+  new URL("../../website/docs/en/guide/cli.md", import.meta.url),
+  new URL("../../website/docs/zh/guide/cli.md", import.meta.url),
+];
+
+const DEPLOYMENT_DOCS = [
+  new URL("../../website/docs/en/guide/deployment.md", import.meta.url),
+  new URL("../../website/docs/zh/guide/deployment.md", import.meta.url),
+];
+
 function extractDocumentedDefaultConfig(markdown: string): unknown {
   const sectionStart = markdown.indexOf("## DEFAULT_CONFIG");
   expect(sectionStart).toBeGreaterThanOrEqual(0);
@@ -38,6 +67,51 @@ describe("configuration documentation parity", () => {
       );
       expect(markdown).toContain("`VEXT_PORT`");
       expect(markdown).toContain("`VEXT_HOST`");
+    });
+  }
+
+  for (const documentUrl of LAYERING_DOCS) {
+    it(`${documentUrl.pathname} distinguishes strict base config from override patches`, async () => {
+      const markdown = await readFile(documentUrl, "utf8");
+
+      expect(markdown).toContain("VextUserConfig");
+      expect(markdown).toContain("VextConfigOverride");
+      expect(markdown).toContain("MonSQLizeDatabaseConfig");
+      expect(markdown).not.toContain("Partial<VextUserConfig>");
+    });
+  }
+
+  for (const documentUrl of TESTING_DOCS) {
+    it(`${documentUrl.pathname} documents test config as an override layer`, async () => {
+      const markdown = await readFile(documentUrl, "utf8");
+
+      expect(markdown).toContain("VextConfigOverride");
+      expect(markdown).not.toContain("config?: Partial<VextConfig>");
+      expect(markdown).not.toContain("`Partial<VextConfig>`");
+    });
+  }
+
+  for (const documentUrl of SCAFFOLD_DOCS) {
+    it(`${documentUrl.pathname} documents active zero-effect scaffold config`, async () => {
+      const markdown = await readFile(documentUrl, "utf8");
+
+      expect(markdown).toContain("local.ts");
+      expect(markdown).toContain("bootstrap.ts");
+      expect(markdown).toContain("VextConfigOverride");
+      expect(markdown).toContain("providers: []");
+      expect(markdown).not.toContain("local.example");
+      expect(markdown).not.toContain("bootstrap.example");
+    });
+  }
+
+  for (const documentUrl of DEPLOYMENT_DOCS) {
+    it(`${documentUrl.pathname} keeps external environment injection without implying dotenv loading`, async () => {
+      const markdown = await readFile(documentUrl, "utf8");
+
+      expect(markdown).toContain("process.env");
+      expect(markdown).toContain(".env*");
+      expect(markdown).toMatch(/does not automatically parse|不会自动解析/);
+      expect(markdown).not.toContain("# .env");
     });
   }
 });

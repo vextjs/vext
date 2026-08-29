@@ -31,12 +31,20 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtemp, mkdir, readdir, writeFile, rm } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readdir, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { loadServices } from "../../src/lib/service-loader.js";
 import { createHookManager } from "../../src/lib/hooks.js";
 import type { VextApp, VextConfig } from "../../src/types/app.js";
+
+const SERVICE_SUPPORT_FIXTURE = join(
+  process.cwd(),
+  "test",
+  "fixtures",
+  "service-support-boundaries",
+  "src",
+);
 
 // ── 测试辅助 ────────────────────────────────────────────────
 
@@ -734,6 +742,19 @@ export default class ReportService {
       // 只有 user.ts 被加载，临时文件被过滤
       expect(app.services).toHaveProperty("user");
       expect((app.services as any).user.name()).toBe("user");
+    });
+
+    it("loads only the service owner from the service support boundaries fixture", async () => {
+      const srcDir = join(tmpDir, "src");
+      await cp(SERVICE_SUPPORT_FIXTURE, srcDir, { recursive: true });
+
+      const app = createMockApp();
+      await loadServices(app, join(srcDir, "services"), {
+        checkCircularDeps: false,
+      });
+
+      expect(Object.keys(app.services)).toEqual(["order"]);
+      expect((app.services as any).order.currentStatus()).toBe("pending");
     });
   });
 

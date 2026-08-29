@@ -2,7 +2,9 @@
 
 ## VextJS 是什么？
 
-VextJS 是一个面向 API、服务端渲染 React 页面或两者并存场景的 Node.js 全栈框架。`src/routes/**` 始终拥有 URL，服务、校验、安全、缓存、OpenAPI 与类型客户端共用同一套请求契约。你可以从默认全栈脚手架起步，也可以保持 API-only，而不必引入第二套路由模型。
+VextJS 是一个面向 API、服务端渲染 React 页面或两者并存场景的 AI-first Node.js 全栈框架。`src/routes/**` 始终拥有 URL，服务、校验、安全、缓存、OpenAPI 与类型客户端共用同一套请求契约。你可以从默认全栈脚手架起步，也可以保持 API-only，而不必引入第二套路由模型。
+
+AI-first 描述的是面向 AI 辅助开发的工程界面：明确的约定、脚手架、类型契约、OpenAPI 与机器可读文档为编程助手提供有依据的输入。它不代表 VextJS 内置 LLM、Agent、RAG 系统或推理 runtime。
 
 ```typescript
 import { defineRoutes } from "vextjs";

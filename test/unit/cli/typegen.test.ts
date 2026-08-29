@@ -19,6 +19,12 @@ const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 
 const FIXTURES_DIR = join(process.cwd(), "test", "fixtures", "typegen");
 const GOLDEN_DIR = join(process.cwd(), "test", "golden", "typegen");
+const SERVICE_SUPPORT_FIXTURE = join(
+  process.cwd(),
+  "test",
+  "fixtures",
+  "service-support-boundaries",
+);
 
 async function makeTreeWritable(root: string): Promise<void> {
   const entries = await readdir(root, { withFileTypes: true });
@@ -38,6 +44,30 @@ async function copyFixtureToTemp(fixtureName: string): Promise<string> {
   );
   const projectRoot = join(tempRoot, "project");
   await cp(join(FIXTURES_DIR, fixtureName), projectRoot, { recursive: true });
+  await makeTreeWritable(projectRoot);
+  return projectRoot;
+}
+
+async function copyServiceSupportFixtureToTemp(): Promise<string> {
+  const projectRoot = await mkdtemp(
+    join(tmpdir(), "vext-typegen-service-support-"),
+  );
+  await cp(join(SERVICE_SUPPORT_FIXTURE, "src"), join(projectRoot, "src"), {
+    recursive: true,
+  });
+  await writeFile(
+    join(projectRoot, "package.json"),
+    `${JSON.stringify({ name: "service-support-boundaries", type: "module" }, null, 2)}\n`,
+  );
+  await writeFile(
+    join(projectRoot, "tsconfig.json"),
+    `${JSON.stringify({ compilerOptions: { module: "NodeNext" } }, null, 2)}\n`,
+  );
+  await mkdir(join(projectRoot, "src", "config"), { recursive: true });
+  await writeFile(
+    join(projectRoot, "src", "config", "default.ts"),
+    "export default { port: 3000 };\n",
+  );
   await makeTreeWritable(projectRoot);
   return projectRoot;
 }
@@ -138,6 +168,46 @@ describe("typegenCommand", () => {
     await expect(
       readFile(join(projectRoot, "src/types/generated/index.d.ts"), "utf-8"),
     ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("indexes only the service owner from the service support boundaries fixture", async () => {
+    projectRoot = await copyServiceSupportFixtureToTemp();
+
+    await typegenCommand([
+      "--root",
+      projectRoot,
+      "--services",
+      "--write-manifest",
+    ]);
+
+    const servicesGenerated = await readNormalized(
+      join(projectRoot, ".vext/types/services.generated.d.ts"),
+    );
+    const servicesManifest = JSON.parse(
+      await readFile(
+        join(projectRoot, ".vext/manifest/services.json"),
+        "utf-8",
+      ),
+    ) as {
+      serviceCount: number;
+      services: Array<{ serviceKey: string; fileRelativePath: string }>;
+    };
+
+    expect(servicesGenerated).toContain(
+      'order: import("../../src/services/order.js").default;',
+    );
+    expect(servicesGenerated).not.toContain("types/server/services");
+    expect(servicesGenerated).not.toContain("types/shared");
+    expect(servicesGenerated).not.toContain("constants/services");
+    expect(servicesManifest.serviceCount).toBe(1);
+    expect(servicesManifest.services).toEqual([
+      {
+        serviceKey: "order",
+        keySegments: ["order"],
+        fileRelativePath: "src/services/order.ts",
+        importPath: "../../src/services/order.js",
+      },
+    ]);
   });
 
   it("falls back to unknown when multiple plugins extend the same key with conflicting types", async () => {

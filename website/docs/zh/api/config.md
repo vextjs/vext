@@ -22,6 +22,8 @@ vext start/dev --port --host ...
 
 合并后的配置通过 `deepFreeze()` 深冻结，运行时不可修改。
 
+TypeScript 中的各层不会共用一个宽松类型。基础 `default.ts` 使用 `VextUserConfig`；一旦包含 `database`，该嵌套值就必须是完整的 `MonSQLizeDatabaseConfig`。profile/local patch 使用 `VextConfigOverride`，嵌套字段可按运行时深度合并语义分层提供。
+
 ### 配置文件清单
 
 | 文件                        | 用途                       | 是否必须 |
@@ -76,7 +78,9 @@ export default defineBootstrapConfig({
 
 ```typescript
 // src/config/default.ts
-export default {
+import type { VextUserConfig } from "vextjs";
+
+const config: VextUserConfig = {
   port: 3000,
   adapter: "native",
   cors: {
@@ -87,11 +91,15 @@ export default {
     level: "debug",
   },
 };
+
+export default config;
 ```
 
 ```typescript
 // src/config/production.ts
-export default {
+import type { VextConfigOverride } from "vextjs";
+
+const config: VextConfigOverride = {
   port: 8080,
   cors: {
     origins: ["https://api.example.com"],
@@ -103,6 +111,8 @@ export default {
     hideInternalErrors: true,
   },
 };
+
+export default config;
 ```
 
 ---
@@ -1302,7 +1312,7 @@ import { DEFAULT_CONFIG } from 'vextjs';
 
 ## VextUserConfig
 
-用户配置的输入类型，所有字段均为可选。由 `loadConfig()` 合并默认值后生成完整的 `VextConfig`。
+`src/config/default.ts` 的基础配置输入类型。框架默认值会补足省略的框架设置，因此其顶层字段可选；但一旦写出嵌套对象，该对象自身的必填字段仍然有效。尤其是 `database` 必须包含合法连接 `config`，不能把半截 database 留给后续 profile 补齐。`loadConfig()` 合并所有层后生成完整 `VextConfig`。
 
 ```typescript
 import type { VextUserConfig } from "vextjs";
@@ -1314,6 +1324,66 @@ const config: VextUserConfig = {
 
 export default config;
 ```
+
+---
+
+## VextConfigOverride
+
+用于 `development.ts`、`production.ts`、自定义 profile、`local.ts` 以及
+`createTestApp({ config })` 的路径感知 patch 类型。普通配置对象遵循运行时深度合并；
+数组、函数、adapter、store 与已注册的 runtime capability 仍保持原子值。
+
+嵌套局部值只有在前层已经拥有必需的运行时数据时才成立。例如，完整 base database
+存在后，profile 可以只 patch `database.findLimit`；`createTestApp()` 不会加载项目
+base，因此在那里新增 `database` 时仍须给出完整数据库配置。
+
+```typescript
+import type { VextConfigOverride } from "vextjs";
+
+const config: VextConfigOverride = {
+  database: { findLimit: 50 },
+  logger: { level: "debug" },
+};
+
+export default config;
+```
+
+### 扩展原子路径
+
+通过 module augmentation 增加的应用或插件字段默认是递归 patch。如果自定义路径
+保存 client、class 实例、adapter 或其他必须整体提供的 capability，应在同一
+augmentation 中把相对 `VextConfig` 根的点分路径加入
+`VextConfigOverrideAtomicPathRegistry`：
+
+```typescript
+import type { VextConfigOverride } from "vextjs";
+
+declare module "vextjs" {
+  interface VextConfig {
+    myPlugin?: {
+      client: {
+        name: string;
+        request(path: string): Promise<unknown>;
+      };
+    };
+  }
+
+  interface VextConfigOverrideAtomicPathRegistry {
+    "myPlugin.client": true;
+  }
+}
+
+declare const client: NonNullable<
+  NonNullable<import("vextjs").VextConfig["myPlugin"]>["client"]
+>;
+
+const config: VextConfigOverride = {
+  myPlugin: { client },
+};
+```
+
+注册表只影响类型，不改变运行时 merge。只有真正需要整体替换的 capability 才应
+登记；普通配置对象应继续保持递归 patch。
 
 ---
 

@@ -203,6 +203,7 @@ const checks = [
   ["changed-file formatting", npm, ["run", "format:check"]],
   ["lint", npm, ["run", "lint"]],
   ["typecheck", npm, ["run", "typecheck"]],
+  ["public type contract tests", npm, ["run", "test:types"]],
   ["ESM/CJS build", npm, ["run", "build"]],
   ["compiled response serializer", npm, ["run", "verify:response-serializer"]],
   ["unit tests", npm, ["run", "test:unit"]],

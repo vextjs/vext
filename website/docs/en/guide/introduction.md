@@ -2,7 +2,9 @@
 
 ## What is VextJS?
 
-VextJS is a full-stack Node.js framework for applications that need APIs, server-rendered React pages, or both. `src/routes/**` remains the URL authority while services, validation, security, cache, OpenAPI, and typed clients share the same request contracts. You can begin with the default full-stack starter or keep an API-only application without adopting a second routing model.
+VextJS is an AI-first full-stack Node.js framework for applications that need APIs, server-rendered React pages, or both. `src/routes/**` remains the URL authority while services, validation, security, cache, OpenAPI, and typed clients share the same request contracts. You can begin with the default full-stack starter or keep an API-only application without adopting a second routing model.
+
+AI-first describes a development surface designed for AI-assisted development: explicit conventions, scaffolding, typed contracts, OpenAPI, and machine-readable documentation give coding assistants grounded inputs. It does not mean VextJS bundles an LLM, Agent, RAG system, or inference runtime.
 
 ```typescript
 import { defineRoutes } from "vextjs";

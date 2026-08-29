@@ -1196,9 +1196,80 @@ export interface VextConfig {
 }
 
 /**
- * 用户配置输入类型（所有字段可选，由 config-loader 合并默认值）
+ * 基线/独立配置输入类型。
+ *
+ * 顶层字段可选；一旦声明嵌套 section，该 section 必须满足完整类型合同。
+ * 环境与本地覆盖层请使用 {@link VextConfigOverride}。
  */
 export type VextUserConfig = Partial<VextConfig>;
+
+/**
+ * 配置覆盖中必须整体替换的 capability 路径。
+ *
+ * 插件可通过 module augmentation 增加自定义原子路径；路径相对于
+ * {@link VextConfig} 根对象，使用点号分隔。
+ */
+export interface VextConfigOverrideAtomicPathRegistry {
+  adapter: true;
+  "session.store": true;
+  "frontend.adapter": true;
+  "frontend.deploy.upload.adapter": true;
+  "cache.cacheHub": true;
+  "database.monsqlizeOptions.schemaDsl.runtime": true;
+}
+
+type VextConfigOverrideFunction = (...args: never[]) => unknown;
+
+type VextConfigOverrideBuiltinAtomic =
+  | Date
+  | RegExp
+  | Error
+  | Promise<unknown>
+  | Map<unknown, unknown>
+  | ReadonlyMap<unknown, unknown>
+  | Set<unknown>
+  | ReadonlySet<unknown>
+  | WeakMap<WeakKey, unknown>
+  | WeakSet<WeakKey>
+  | ArrayBuffer
+  | ArrayBufferView;
+
+type VextConfigOverrideChildPath<
+  Parent extends string,
+  Key extends PropertyKey,
+> = Key extends string ? `${Parent}.${Key}` : Parent;
+
+type VextConfigOverrideValue<
+  T,
+  Path extends string,
+> = Path extends keyof VextConfigOverrideAtomicPathRegistry
+  ? T
+  : T extends VextConfigOverrideFunction
+    ? T
+    : T extends readonly unknown[]
+      ? T
+      : T extends VextConfigOverrideBuiltinAtomic
+        ? T
+        : T extends object
+          ? {
+              [K in keyof T]?: VextConfigOverrideValue<
+                T[K],
+                VextConfigOverrideChildPath<Path, K>
+              >;
+            }
+          : T;
+
+/**
+ * 环境、local 与测试配置使用的路径感知递归 patch 类型。
+ *
+ * 普通对象可递归省略字段；数组、函数、内建对象与注册的 capability
+ * 路径保持原类型并整体替换，与 config-loader 的运行时合并边界一致。
+ */
+export type VextConfigOverride = {
+  [K in keyof VextConfig]?: K extends string
+    ? VextConfigOverrideValue<VextConfig[K], K>
+    : VextConfig[K];
+};
 
 // ── VextApp 类型定义 ────────────────────────────────────────
 

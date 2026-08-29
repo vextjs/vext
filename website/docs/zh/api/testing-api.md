@@ -68,7 +68,7 @@ describe("用户接口", () => {
 
 ```typescript
 interface CreateTestAppOptions {
-  config?: Partial<VextConfig>;
+  config?: VextConfigOverride;
   plugins?: boolean;
   setupPlugins?: (app: VextApp) => Promise<void> | void;
   services?: boolean;
@@ -84,7 +84,7 @@ interface CreateTestAppOptions {
 
 | 字段           | 类型                         | 默认值          | 说明                                          |
 | -------------- | ---------------------------- | --------------- | --------------------------------------------- |
-| `config`       | `Partial<VextConfig>`        | `{}`            | 覆盖默认配置（深度合并到测试默认配置之上）    |
+| `config`       | `VextConfigOverride`         | `{}`            | 合并到框架默认值与测试默认值之上的后层 patch  |
 | `plugins`      | `boolean`                    | `false`         | 是否加载 `src/plugins/`（测试环境默认不加载） |
 | `setupPlugins` | `Function`                   | `undefined`     | 手动注册插件（替代自动扫描）                  |
 | `services`     | `boolean`                    | `true`          | 是否加载 `src/services/`                      |
@@ -98,7 +98,11 @@ interface CreateTestAppOptions {
 
 ### `config`
 
-覆盖测试默认配置，深度合并。
+按 profile/local 配置相同的路径感知深度合并语义 patch 框架默认值与测试默认值。
+这些默认值中已经存在的嵌套 plain object 可以局部提供；adapter、store、callback
+与数组等原子值仍保持完整。`createTestApp()` 不加载项目的
+`src/config/default.ts`，其内置默认值也不包含 `database`；若新增该可选 section，
+必须提供完整 database 配置，不能只写半截 patch。
 
 ```typescript
 testApp = await createTestApp({

@@ -10,7 +10,7 @@ When the framework starts, `config-loader` loads configuration files and merges 
 Framework built-in defaults → default.ts → {configProfile}.ts → local.ts → bootstrap provider patch → CLI override
 ```
 
-Each layer can declare only the fields that need to be covered, and undeclared fields are inherited from the previous layer.
+Runtime merging lets later layers declare only the fields they override. TypeScript intentionally distinguishes the project base from those later patches: `default.ts` uses `VextUserConfig`, while environment profile and local config files use `VextConfigOverride`; `createTestApp()` applies the same override contract. Bootstrap providers keep their JSON-like `Record<string, unknown>` patch contract and runtime validation.
 
 ### Configuration file
 
@@ -59,6 +59,14 @@ Instead of relying on the `process.env.NODE_ENV` conditional branch in the sourc
 - **Other Arrays**: The back layer covers the front layer
 - **`bootstrap provider patch`**: Participate in the same merge / validate / freeze process after `local.ts` and before CLI override
 - **Final result**: deep freeze (`deepFreeze`), unmodifiable at runtime
+
+### TypeScript base and override layers
+
+- **Base config (`default.ts`)**: use `VextUserConfig`. Its top-level fields are optional, but a nested object you provide is not automatically a deep partial. For example, a `database` value in `default.ts` must satisfy the complete `MonSQLizeDatabaseConfig`, including its required `config` connection object.
+- **Override layers**: use `VextConfigOverride` in `development.ts`, `production.ts`, custom profiles, and `local.ts`. It mirrors runtime deep-merge semantics, so a later layer may patch only `database.findLimit` or `logger.level` while inheriting the rest from the complete base.
+- **Atomic capabilities**: adapters, stores, callbacks, arrays, and registered runtime-capability paths remain complete values rather than being recursively weakened.
+
+Do not split a required base object across files and expect TypeScript to wait for a later merge. A half `database` in `default.ts` is invalid even if `development.ts` supplies its `uri`; put a complete database connection in the base, then patch only environment differences in later layers. See [Database configuration](./database#multiple-environment-configuration).
 
 ### Bootstrap Config Provider
 
@@ -115,7 +123,9 @@ Export one object per configuration file using `export default`:
 
 ```typescript
 // src/config/default.ts
-export default {
+import type { VextUserConfig } from "vextjs";
+
+const config: VextUserConfig = {
   port: 3000,
   host: "0.0.0.0",
   logger: {
@@ -146,11 +156,15 @@ export default {
     preset: "basic",
   },
 };
+
+export default config;
 ```
 
 ```typescript
 // src/config/production.ts — only overwrite the fields that need to be changed
-export default {
+import type { VextConfigOverride } from "vextjs";
+
+const config: VextConfigOverride = {
   logger: {
     level: "warn", //Reduce log output in production environment
   },
@@ -161,13 +175,19 @@ export default {
     enabled: false, // Close the document in production environment
   },
 };
+
+export default config;
 ```
 
 ```typescript
 // src/config/local.ts — special configuration for local development (do not submit to Git)
-export default {
+import type { VextConfigOverride } from "vextjs";
+
+const config: VextConfigOverride = {
   port: 8080, // Use other ports locally
 };
+
+export default config;
 ```
 
 `config.session.enabled: true` auto-registers Session across production, development, testing, and soft reload. It defaults to `false`; the built-in memory store is suitable for single-process deployments. Shared deployments should set `config.session.store` to `createCacheSessionStore(cacheLike)` or a custom `VextSessionStore`. Route options can use `session: false` to opt out or `session: true` to opt in while the global runtime is disabled. The explicit `session()` middleware remains available for scoped/manual registration.
@@ -997,6 +1017,12 @@ declare module "vextjs" {
 ## Environment variables
 
 In addition to configuration files, some settings can also be controlled through environment variables:
+
+VextJS does not automatically parse `.env` files. A value visible through
+`process.env` must already have been injected by the OS, shell, process manager,
+container/CI platform, secret manager, or a loader explicitly owned by the
+application. Use `--config` or `VEXT_CONFIG` to select a Vext config profile;
+an `.env` file is not another built-in Vext profile layer.
 
 | Environment variables  | Description                                                                 |
 | ---------------------- | --------------------------------------------------------------------------- |

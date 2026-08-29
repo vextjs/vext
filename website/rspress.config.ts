@@ -524,21 +524,21 @@ export default defineConfig({
   logoText: "VextJS",
   icon: "/favicon.svg",
   description:
-    "High-performance full-stack Node.js framework with a native fast path, React frontend integration, schema-dsl validation, OpenAPI, hot reload, and production runtime features.",
+    "AI-first full-stack Node.js framework with typed contracts, OpenAPI, machine-readable docs, React SSR, and production runtime features.",
   locales: [
     {
       lang: "en",
       label: "English",
       title: "VextJS",
       description:
-        "High-performance full-stack Node.js framework with native routing, React frontend integration, schema-dsl validation, OpenAPI, and production runtime features.",
+        "AI-first full-stack Node.js framework with typed contracts, OpenAPI, machine-readable docs, React SSR, and production runtime features.",
     },
     {
       lang: "zh",
       label: "简体中文",
       title: "VextJS",
       description:
-        "VextJS 是高性能 Node.js 全栈框架，提供 Native fast path、React 前端集成、三段式热重载、CLI、校验、OpenAPI 与生产部署能力。",
+        "VextJS 是 AI-first Node.js 全栈框架，通过约定、类型契约、OpenAPI 与机器可读文档支持 AI 辅助开发。",
     },
   ],
   outDir: "dist",
@@ -557,7 +557,7 @@ export default defineConfig({
       {
         property: "og:description",
         content:
-          "High-performance full-stack Node.js framework with a native fast path, React frontend integration, three-tier hot reload, CLI, OpenAPI and production-ready runtime features.",
+          "AI-first full-stack Node.js framework with typed contracts, OpenAPI, machine-readable docs, React SSR, and production runtime features.",
       },
     ],
     ["meta", { property: "og:url", content: docsHomeUrl }],
@@ -584,7 +584,7 @@ export default defineConfig({
         label: "English",
         title: "VextJS",
         description:
-          "High-performance full-stack Node.js framework with native routing, React frontend integration, schema-dsl validation, OpenAPI, and production runtime features.",
+          "AI-first full-stack Node.js framework with typed contracts, OpenAPI, machine-readable docs, React SSR, and production runtime features.",
         nav: englishNav,
         sidebar: {
           "/frontend/": englishFrontendSidebar,
@@ -599,7 +599,7 @@ export default defineConfig({
         label: "简体中文",
         title: "VextJS",
         description:
-          "VextJS 是高性能 Node.js 全栈框架，提供 Native fast path、React 前端集成、三段式热重载、CLI、校验、OpenAPI 与生产部署能力。",
+          "VextJS 是 AI-first Node.js 全栈框架，通过约定、类型契约、OpenAPI 与机器可读文档支持 AI 辅助开发。",
         nav: chineseNav,
         sidebar: {
           "/zh/frontend/": chineseFrontendSidebar,

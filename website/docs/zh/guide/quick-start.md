@@ -237,8 +237,8 @@ my-app/
 │   │   ├── default.ts        # 共享配置（port: 3000）
 │   │   ├── development.ts    # 开发环境 profile
 │   │   ├── production.ts     # 生产环境 profile
-│   │   ├── local.example.ts  # 复制为 local.ts 后添加本地覆盖
-│   │   └── bootstrap.example.ts # 复制为 bootstrap.ts 后添加启动期 provider
+│   │   ├── local.ts          # 空本地覆盖；被 Git 忽略
+│   │   └── bootstrap.ts      # 可跟踪的启动入口，默认 providers: []
 │   ├── frontend/
 │   │   ├── components/AppShell.tsx # 公共 React shell
 │   │   ├── locales/en-US.ts  # starter 文案
@@ -264,7 +264,7 @@ VextJS 会自动扫描 `src/routes/`、`src/services/`、`src/config/`、`src/mi
 
 :::
 
-`src/config/local.example.ts` 和 `src/config/bootstrap.example.ts` 是脚手架生成的示例文件。需要启用本地覆盖或启动期 provider 时，将它们分别复制为 `local.ts` / `bootstrap.ts`。`src/config/bootstrap.ts` 存在时会在 `default/env/local` 合并后、CLI override 前执行，并将 provider 返回的 patch 纳入最终配置链路。
+脚手架会直接创建零副作用的 `src/config/local.ts` 与 `src/config/bootstrap.ts`。`local.ts` 初始为空 `VextConfigOverride`，并被 `.gitignore` 排除，因此 fresh clone 中没有它也不影响 build/start；`bootstrap.ts` 初始为 `providers: []`，正常跟踪，后续可在 CLI override 前注册启动期 provider。service 类型、运行时常量与公共函数的所有权规则见[项目结构](/zh/guide/project-structure)。
 
 ## 访问 OpenAPI 文档
 
